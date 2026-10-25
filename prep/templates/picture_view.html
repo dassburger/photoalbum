@@ -6,6 +6,10 @@
   <link rel="stylesheet" href="/static/picture-view.css">
 {% endblock %}
 
+{% block extra_js %}
+  <script src="/static/picture-view.js" defer></script>
+{% endblock %}
+
 {% block content %}
 <div class="picture-view">
   {% if is_video %}

@@ -17,6 +17,13 @@
   max-height: 80vh;
 }
 
+/* Hover-activated left/right nav buttons (Task 15, same hidden-by-default
+ * / reveal-on-hover pattern as album-page.css's .scroll-button from Task
+ * 14). No JS is needed to toggle this visibility — unlike the
+ * continuously-scrollable album grid, there's no "no-op button" case to
+ * guard against here: render_picture_pages() already omits the <a>
+ * entirely when there's no prev/next item, so a button that would do
+ * nothing simply never exists in the DOM. */
 .picture-nav-button {
   appearance: none;
   position: fixed;
@@ -31,12 +38,15 @@
   font-size: 1.25rem;
   line-height: 1;
   cursor: pointer;
-  opacity: 0.6;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
 }
 
-.picture-nav-button:hover,
-.picture-nav-button:focus-visible {
+.picture-view:hover .picture-nav-button,
+.picture-view:focus-within .picture-nav-button {
   opacity: 1;
+  pointer-events: auto;
 }
 
 .picture-nav-button--prev {
