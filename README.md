@@ -451,13 +451,13 @@ No host Python install is required. From the repo root:
 docker compose run --rm prep pytest
 ```
 
-This runs the full test suite (currently 134 passed inside the container —
-2 of the tests that skip on a host without `ffmpeg`/`ffprobe` installed run
+This runs the full test suite (currently 173 passed inside the container —
+3 of the tests that skip on a host without `ffmpeg`/`ffprobe` installed run
 for real here) with zero host-side dependencies beyond Docker itself.
 
 If you do have a local Python environment set up for development
 (optional, not required for normal use), `pip install -e ".[dev]"` from the
-repo root followed by `pytest` works too — expect `132 passed, 2 skipped`
+repo root followed by `pytest` works too — expect `170 passed, 3 skipped`
 on a host without `ffmpeg`/`ffprobe`.
 
 ## Repository layout

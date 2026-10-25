@@ -74,9 +74,6 @@ def thumbnail_path(album_dir: str | Path, source_filename: str) -> Path:
     return thumbs_dir(album_dir) / thumbnail_filename(source_filename)
 
 
-_atomic_write = atomic_write
-
-
 def generate_photo_thumbnail(
     src: str | Path, dest: str | Path, max_size: int = DEFAULT_MAX_SIZE
 ) -> tuple[int, int]:
@@ -84,7 +81,7 @@ def generate_photo_thumbnail(
 
     Applies `ImageOps.exif_transpose` *before* resizing, so a portrait
     photo carrying an EXIF Orientation tag isn't rotated in the generated
-    thumbnail. Written atomically (temp file + rename, see `_atomic_write`)
+    thumbnail. Written atomically (temp file + rename, see `atomic_write`)
     to `dest`, which is created (along with any missing parent
     directories) if needed.
 
@@ -109,7 +106,7 @@ def generate_photo_thumbnail(
             def _save(tmp_path: Path) -> None:
                 img.save(tmp_path, format="JPEG", quality=85)
 
-            _atomic_write(dest, _save)
+            atomic_write(dest, _save)
     except Exception as exc:
         raise AssetError(f"could not read photo {src}: {exc}") from exc
     return size
@@ -124,7 +121,7 @@ def generate_video_poster(
 ) -> tuple[int, int]:
     """Extract a single early frame from a video as a JPEG poster, via ffmpeg.
 
-    Written atomically (temp file + rename, see `_atomic_write`) to `dest`.
+    Written atomically (temp file + rename, see `atomic_write`) to `dest`.
     Returns the poster frame's `(width, height)`, read back from the
     generated JPEG via Pillow (which also double-checks ffmpeg actually
     produced a valid, readable image).
@@ -174,7 +171,7 @@ def generate_video_poster(
             ) from exc
 
     try:
-        _atomic_write(dest, _extract)
+        atomic_write(dest, _extract)
     except AssetError:
         raise
     except Exception as exc:

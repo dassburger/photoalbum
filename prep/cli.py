@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 import tempfile
 import tomllib
+import uuid
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -398,14 +399,28 @@ def _is_video(filename: str) -> bool:
 def _generate_assets_atomically(
     album_dir: Path, media_items: list[ManifestItem]
 ) -> None:
-    """Generate every item's thumbnail/poster into a staging dir, then move
-    the whole batch into `.web/thumbs/` only if every item succeeded.
+    """Generate every item's thumbnail/poster into a staging dir, then swap
+    the whole batch into `.web/thumbs/`'s place as a single directory-level
+    rename, only if every item succeeded.
 
     This is what makes a Task 6 AssetError (corrupt/unreadable source)
     among several items a true hard-validation failure: if item 3 of 10
     fails, items 1-2's thumbnails are never moved into the real album
     folder at all — the staging directory (and everything in it) is
     discarded, leaving `.web/thumbs/` exactly as it was before this run.
+
+    Deliberately NOT implemented as a per-file rename loop straight into
+    the live `final_dir`: `Path.rename(dest)` *overwrites* whatever was
+    already at `dest`, so on a re-publish of an album that was already
+    published before (the normal case), a partial-failure rollback that
+    unlinks each already-renamed destination would delete the newly
+    written thumbnail without restoring the previously-valid one that
+    used to live there -- a real data-loss bug (see iteration-2 review
+    finding #2), and one that per-file renaming can never fully avoid
+    (it also isn't atomic against a SIGKILL mid-loop). Swapping the
+    entire directory in as one unit fixes both problems: the live
+    `final_dir` only ever changes via a single rename, and on failure the
+    previous, still-valid directory is renamed right back into place.
     """
     web_dir = album_dir / ".web"
     web_dir.mkdir(parents=True, exist_ok=True)
@@ -418,29 +433,30 @@ def _generate_assets_atomically(
                 generate_video_poster(src, dest)
             else:
                 generate_photo_thumbnail(src, dest)
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
 
-        final_dir = thumbs_dir(album_dir)
-        final_dir.mkdir(parents=True, exist_ok=True)
-        renamed: list[Path] = []
-        try:
-            for item in media_items:
-                filename = thumbnail_filename(item.file)
-                dest = final_dir / filename
-                (staging / filename).rename(dest)
-                renamed.append(dest)
-        except Exception:
-            # A failure partway through the move loop (e.g. a permission
-            # error or a full disk on one particular rename) must not leave
-            # *some* of this run's thumbnails moved into the real album
-            # folder while others aren't -- that would contradict this
-            # function's own "whole batch moved only if every item
-            # succeeded" contract (see Quality review finding #5). Undo
-            # every rename that already succeeded before re-raising.
-            for moved_dest in renamed:
-                moved_dest.unlink(missing_ok=True)
-            raise
+    final_dir = thumbs_dir(album_dir)
+    backup_dir = web_dir / f".thumbs-backup-{uuid.uuid4().hex}"
+    swapped_out = False
+    try:
+        if final_dir.exists():
+            final_dir.rename(backup_dir)
+            swapped_out = True
+        staging.rename(final_dir)
+    except Exception:
+        # The swap itself is just two renames -- if the first (moving the
+        # previous final_dir aside) succeeded but the second (moving
+        # staging into final_dir's place) failed, restore the previous,
+        # still-valid thumbnails rather than leaving final_dir empty or
+        # missing.
+        if swapped_out and backup_dir.exists() and not final_dir.exists():
+            backup_dir.rename(final_dir)
+        raise
     finally:
         shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(backup_dir, ignore_errors=True)
 
     cleanup_stale_thumbnails(album_dir, [item.file for item in media_items])
 

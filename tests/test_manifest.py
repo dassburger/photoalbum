@@ -412,3 +412,53 @@ def test_remove_user_from_manifests_writes_atomically_no_leftover_temp_file(tmp_
     leftovers = [p for p in album.iterdir() if p.name != "publish.yaml"]
     assert leftovers == []
     assert load_manifest(album).allowed_users == ["bob"]
+
+
+def test_remove_user_from_manifests_leaves_original_untouched_on_write_failure(
+    tmp_path, monkeypatch
+):
+    """Tightened version of the previous test (iteration-2 review finding
+    #7): the previous test's assertions ("no leftover temp file", "final
+    content is correct") would pass identically under the old, non-atomic
+    `open("w")` implementation too, since there's nothing to leave behind
+    either way on a successful run -- it didn't actually discriminate
+    atomic from non-atomic writes.
+
+    This test does: it forces the rename step itself (`os.replace`, inside
+    prep/atomic.py's `atomic_write`) to fail *after* the new content has
+    already been fully written to the temp file, and asserts the original
+    `publish.yaml` is completely unchanged. A plain in-place `open("w")`
+    write would have already truncated/overwritten the real file by this
+    point (open("w") truncates immediately) -- only a genuine temp-file-
+    plus-rename implementation can leave the original intact when the
+    final rename itself is the thing that fails.
+    """
+    import prep.atomic as atomic_module
+
+    root = tmp_path / "Pictures"
+    root.mkdir()
+    album = root / "Album"
+    album.mkdir()
+    manifest_path = album / "publish.yaml"
+    original_content = "# keep me\nallowed_users: [alice, bob]\n"
+    manifest_path.write_text(original_content)
+
+    real_replace = os.replace
+
+    def _failing_replace(src, dst):
+        raise OSError("simulated crash during rename")
+
+    monkeypatch.setattr(atomic_module.os, "replace", _failing_replace)
+
+    with pytest.raises(OSError):
+        remove_user_from_manifests("alice", root)
+
+    monkeypatch.setattr(atomic_module.os, "replace", real_replace)
+
+    # The original file must be byte-for-byte unchanged -- a non-atomic
+    # open("w") write would have already clobbered it before this failure
+    # point could even be simulated.
+    assert manifest_path.read_text() == original_content
+    # No leftover temp file in the album directory either.
+    leftovers = [p for p in album.iterdir() if p.name != "publish.yaml"]
+    assert leftovers == []

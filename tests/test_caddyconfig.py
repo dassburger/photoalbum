@@ -9,6 +9,7 @@ real Caddy binary or container.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -27,6 +28,8 @@ from prep.caddyconfig import (
 from prep.cli import cli
 from prep.manifest import AlbumInfo, Manifest
 from prep.render import AlbumSummary, write_album_summary
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
 def _album(
@@ -438,3 +441,65 @@ def test_sync_routes_writes_expected_caddyfile_for_published_albums_only(
     assert "/2024/Published/*" in caddyfile
     assert "Never Published" not in caddyfile
     assert "photos.example.com" in caddyfile
+
+
+def test_sync_caddy_routes_skips_date_rescan_for_unlisted_media(tmp_path, monkeypatch):
+    """Regression test for iteration-2 review finding #6: _published_albums
+    (and therefore sync_caddy_routes, the shared tail of `prep sync-routes`/
+    `users add`/`users passwd`/`users delete`) is supposed to pass
+    populate_items=False through to discover_albums, since
+    generate_caddyfile only ever reads each album's path/public/
+    allowed_users, never its items. The existing sync-routes test above
+    uses albums with zero real media files on disk, so the auto-population
+    date-scan would never run anyway regardless of whether
+    populate_items=False is actually wired through -- no real signal
+    either way.
+
+    This test drops a real, un-listed media file into a published album
+    (no explicit `items:` in publish.yaml) and monkeypatches get_item_date
+    to raise if it's ever called from prep.manifest's auto-population
+    path. sync_caddy_routes() (called directly, not through the CLI, to
+    exercise exactly the real call site named in the finding) must not
+    raise.
+    """
+    import prep.manifest as manifest_module
+
+    def _boom(*args, **kwargs):
+        raise AssertionError(
+            "get_item_date must not be called -- _published_albums should "
+            "use populate_items=False"
+        )
+
+    monkeypatch.setattr(manifest_module, "get_item_date", _boom)
+    monkeypatch.setattr(
+        cli_module, "reload_caddy", lambda *a, **kw: "reloaded Caddy (stub)"
+    )
+
+    pictures_root = tmp_path / "pictures"
+    album_dir = pictures_root / "2024" / "Trip"
+    album_dir.mkdir(parents=True)
+    (album_dir / "publish.yaml").write_text("public: true\nallowed_users: []\n")
+    shutil.copy(FIXTURES / "sample_no_exif.jpg", album_dir / "IMG_0001.jpg")
+    write_album_summary(
+        album_dir,
+        AlbumSummary(
+            album_path="2024/Trip",
+            title="Trip",
+            public=True,
+            earliest_date="2024-01-01",
+            covers=[],
+        ),
+    )
+
+    status = cli_module.sync_caddy_routes(
+        pictures_root=pictures_root,
+        site_root=tmp_path / "site",
+        users_path=tmp_path / "users.yml",
+        caddy_dir=tmp_path / "caddy",
+        domain="photos.example.com",
+        acme_email="me@example.com",
+    )
+
+    assert status == "reloaded Caddy (stub)"
+    content = (tmp_path / "caddy" / CADDYFILE_FILENAME).read_text()
+    assert "/2024/Trip" in content

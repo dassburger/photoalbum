@@ -42,7 +42,17 @@ photos.example.com {
     # -- Private album: wrapped in basic_auth, listing exactly this
     # album's allowed_users intersected with users.yml. No other album's
     # credentials appear in this block.
-    handle_path "/2024/family-reunion/*" {
+    #
+    # The `redir` line immediately before `handle_path` exists because
+    # `handle_path "<path>/*"` requires the literal trailing "/" before
+    # matching anything -- it does NOT match the bare path with no
+    # trailing slash (e.g. a bookmarked/typed "/2024/family-reunion").
+    # Without this redirect, that bare URL would silently fall through
+    # to the catch-all `handle {}` block below and serve the site-wide
+    # index instead of the album (a 200, not even a 404) -- see the
+    # review finding this redirect was added to fix.
+    redir /2024/family-reunion /2024/family-reunion/ 308
+    handle_path /2024/family-reunion/* {
         root * /pictures/2024/family-reunion
         route {
             basic_auth {
@@ -59,8 +69,10 @@ photos.example.com {
         }
     }
 
-    # -- Public album: identical shape, but no basic_auth wrapper at all.
-    handle_path "/2024/summer-trip/*" {
+    # -- Public album: identical shape (including the same trailing-slash
+    # redirect), but no basic_auth wrapper at all.
+    redir /2024/summer-trip /2024/summer-trip/ 308
+    handle_path /2024/summer-trip/* {
         root * /pictures/2024/summer-trip
         route {
             @excluded path /work/* /publish.yaml

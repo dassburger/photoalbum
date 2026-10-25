@@ -624,3 +624,54 @@ def test_render_albums_index_empty_pictures_root_writes_empty_index(tmp_path: Pa
     dest = render_albums_index(site_root, pictures_root)
     assert dest.exists()
     assert 'class="albums-index"' in dest.read_text()
+
+
+def test_render_albums_index_skips_date_rescan_for_unlisted_media(
+    tmp_path: Path, monkeypatch
+):
+    """Regression test for iteration-2 review finding #6: render_albums_index
+    is supposed to pass populate_items=False through to discover_albums, so
+    it never pays for an EXIF/ffprobe re-scan of every photo/video in every
+    album just to render the index (it only reads each album's own
+    .web/album.json summary). The existing render_albums_index tests all
+    use albums with zero real media files on disk, so the auto-population
+    date-scan (prep.manifest._auto_populate_items -> get_item_date) would
+    never run anyway regardless of whether populate_items=False is
+    actually wired through -- no real signal either way.
+
+    This test drops a real, un-listed media file into the album (no
+    explicit `items:` in publish.yaml, so a populate_items=True load would
+    auto-populate and date-scan it) and monkeypatches get_item_date to
+    raise if it's ever called from prep.manifest's auto-population path.
+    render_albums_index must not raise.
+    """
+    import prep.manifest as manifest_module
+
+    def _boom(*args, **kwargs):
+        raise AssertionError(
+            "get_item_date must not be called -- render_albums_index should "
+            "use populate_items=False"
+        )
+
+    monkeypatch.setattr(manifest_module, "get_item_date", _boom)
+
+    pictures_root = tmp_path / "pictures"
+    site_root = tmp_path / "site"
+    album_dir = pictures_root / "2024" / "Trip"
+    album_dir.mkdir(parents=True)
+    (album_dir / "publish.yaml").write_text("public: true\n")
+    shutil.copy(FIXTURES_DIR / "sample_no_exif.jpg", album_dir / "IMG_0001.jpg")
+    write_album_summary(
+        album_dir,
+        AlbumSummary(
+            album_path="2024/Trip",
+            title="Trip",
+            public=True,
+            earliest_date="2024-01-01",
+            covers=[],
+        ),
+    )
+
+    dest = render_albums_index(site_root, pictures_root)
+    assert dest.exists()
+    assert "Trip" in dest.read_text()

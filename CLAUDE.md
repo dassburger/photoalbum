@@ -34,14 +34,21 @@ crash mid-write leaves the destination exactly as it was, never truncated
 or half-written.
 
 The shared implementation is `prep/atomic.py`'s `atomic_write`/
-`atomic_write_text` — use these (or the thin per-module wrappers that
-delegate to them: `prep/assets.py::_atomic_write`,
-`prep/render.py::_atomic_write_text`) rather than reimplementing the
-pattern. `atomic_write` also `chmod`s the file to `0o644` before the rename,
-since `prep` runs as root in its container (no non-root `USER` is set in
+`atomic_write_text` — call these directly (every module does; there are no
+per-module aliases) rather than reimplementing the pattern. `atomic_write`
+`chmod`s the file to `mode` before the rename (default `0o644`), since
+`prep` runs as root in its container (no non-root `USER` is set in
 `prep/Dockerfile` — see below) and the host user who manages the generated
 tree is not root; without this, every generated file would default to
 `tempfile.mkstemp`'s `0600` and be unreadable/unmanageable from the host.
+
+**Exception: `users.yml`.** `prep/users.py`'s `save_users` passes an
+explicit `mode=0o600` override. `users.yml` holds bcrypt password hashes
+and is read only by the `prep` container itself, so — unlike
+`publish.yaml`/HTML/thumbnails/the Caddyfile, which all need to be host- or
+Caddy-readable at `0o644` — it must never be group/world-readable. If you
+add a new writer for a credentials-bearing file, pass `mode=0o600`
+explicitly; don't rely on the `0o644` default.
 
 **If you add a new module that writes to a real album folder, `users.yml`,
 or the generated `Caddyfile`, use `prep/atomic.py`, not a new copy of the

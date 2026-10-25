@@ -142,7 +142,7 @@ def write_album_summary(album_dir: str | Path, summary: AlbumSummary) -> Path:
     """
     dest = Path(album_dir) / ALBUM_SUMMARY_FILENAME
     content = json.dumps(summary.to_dict(), indent=2, sort_keys=True)
-    _atomic_write_text(dest, content)
+    atomic_write_text(dest, content)
     return dest
 
 
@@ -184,9 +184,6 @@ def picture_page_filename(source_filename: str) -> str:
     always agree on the exact same name.
     """
     return f"{Path(source_filename).stem}.html"
-
-
-_atomic_write_text = atomic_write_text
 
 
 def _grid_rows_for_template(entries) -> list[dict]:
@@ -281,7 +278,7 @@ def render_album_page(album_info: AlbumInfo, album_dir: str | Path) -> Path:
     html = _env.get_template("album_page.html").render(title=manifest.title, rows=rows)
 
     dest = album_dir / "index.html"
-    _atomic_write_text(dest, html)
+    atomic_write_text(dest, html)
     return dest
 
 
@@ -333,7 +330,7 @@ def render_picture_pages(album_info: AlbumInfo, album_dir: str | Path) -> list[P
         )
 
         dest = picture_dir / filename
-        _atomic_write_text(dest, html)
+        atomic_write_text(dest, html)
         written.append(dest)
 
     if picture_dir.exists():
@@ -458,5 +455,5 @@ def render_albums_index(site_root: str | Path, pictures_root: str | Path) -> Pat
     html = _env.get_template("albums_index.html").render(years=template_years)
 
     dest = site_root / "index.html"
-    _atomic_write_text(dest, html)
+    atomic_write_text(dest, html)
     return dest

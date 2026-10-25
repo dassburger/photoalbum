@@ -40,6 +40,12 @@ def save_users(path: str | Path, data) -> None:
     mid-write never leaves users.yml truncated/corrupt -- same crash-safety
     rule the plan requires for anything touching persisted output (see
     Quality review finding #2).
+
+    Explicitly overrides atomic_write's 0o644 default to 0o600: unlike
+    every other generated/persisted file (thumbnails, HTML, the Caddyfile,
+    publish.yaml), users.yml holds bcrypt password hashes and is read only
+    by the prep container itself -- it should never be group/world-
+    readable (see iteration-2 review finding #1).
     """
     path = Path(path)
 
@@ -47,7 +53,7 @@ def save_users(path: str | Path, data) -> None:
         with tmp_path.open("w") as f:
             _yaml.dump(data, f)
 
-    atomic_write(path, _save)
+    atomic_write(path, _save, mode=0o600)
 
 
 def hash_password(plaintext: str) -> str:

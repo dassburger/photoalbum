@@ -81,6 +81,20 @@ def test_save_and_load_round_trip_preserves_comments_and_order(tmp_path):
     )
 
 
+def test_save_users_writes_mode_0600(tmp_path):
+    """users.yml holds bcrypt password hashes and is read only by the prep
+    container -- it must never be group/world-readable, unlike the other
+    atomic_write/atomic_write_text callers (publish.yaml, HTML, the
+    Caddyfile) which default to 0o644 (see iteration-2 review finding #1:
+    a prior refactor onto the shared atomic.py helper silently dropped
+    this to 0644)."""
+    path = tmp_path / "users.yml"
+    data = {}
+    add_user(data, "alice", "s3cret")
+    save_users(path, data)
+    assert oct(path.stat().st_mode & 0o777) == oct(0o600)
+
+
 def test_hash_password_produces_verifiable_bcrypt_hash():
     hashed = hash_password("s3cret")
     assert hashed.startswith("$2")
@@ -144,6 +158,7 @@ def test_cli_users_add_creates_user(tmp_path, monkeypatch):
     assert "alice" in data
     assert bcrypt.checkpw(b"s3cret", data["alice"].encode("utf-8"))
     assert "reloaded Caddy (stub)" in result.output
+    assert oct(users_path.stat().st_mode & 0o777) == oct(0o600)
 
 
 def test_cli_users_add_duplicate_errors(tmp_path, monkeypatch):
@@ -186,6 +201,7 @@ def test_cli_users_passwd_updates_password(tmp_path, monkeypatch):
     assert data_after["alice"] != old_hash
     assert bcrypt.checkpw(b"new-pass", data_after["alice"].encode("utf-8"))
     assert "reloaded Caddy (stub)" in result.output
+    assert oct(users_path.stat().st_mode & 0o777) == oct(0o600)
 
 
 def test_cli_users_passwd_unknown_user_errors(tmp_path, monkeypatch):
@@ -256,6 +272,7 @@ def test_cli_users_delete_removes_user_from_users_yml_manifests_and_caddyfile(
     data = load_users(users_path)
     assert "alice" not in data
     assert "bob" in data
+    assert oct(users_path.stat().st_mode & 0o777) == oct(0o600)
 
     manifest = load_manifest(album_dir)
     assert manifest.allowed_users == ["bob"]

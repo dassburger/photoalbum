@@ -200,11 +200,11 @@ def test_publish_corrupt_image_aborts_without_partial_thumbnails(tmp_path, monke
 def test_generate_assets_atomically_rolls_back_on_partial_rename_failure(
     tmp_path, monkeypatch
 ):
-    """If the per-item move-into-final_dir loop fails partway through (e.g.
-    an OS-level rename error on one particular item), any items already
-    moved in *this run* must be rolled back -- otherwise the batch isn't
-    actually all-or-nothing, contradicting _generate_assets_atomically's
-    own docstring (Quality review finding #5)."""
+    """On a first-ever publish (no pre-existing .web/thumbs/), a failure
+    during the final directory-level swap must leave .web/thumbs/ exactly
+    as it was before this run -- i.e. still not existing at all, and the
+    half-built staging dir discarded -- rather than appearing with some
+    items present and others missing."""
     from prep.cli import ManifestItem, _generate_assets_atomically
 
     album_dir = tmp_path / "album"
@@ -215,10 +215,74 @@ def test_generate_assets_atomically_rolls_back_on_partial_rename_failure(
     media_items = [ManifestItem(file="IMG_0001.jpg"), ManifestItem(file="IMG_0002.jpg")]
 
     real_rename = Path.rename
+
+    def _failing_rename(self, target):
+        # final_dir doesn't exist yet (first-ever publish), so the only
+        # Path.rename call in the swap phase is staging -> final_dir.
+        raise OSError("simulated rename failure")
+
+    monkeypatch.setattr(Path, "rename", _failing_rename)
+
+    with pytest.raises(OSError):
+        _generate_assets_atomically(album_dir, media_items)
+
+    monkeypatch.setattr(Path, "rename", real_rename)
+
+    # .web/thumbs/ must be exactly as it was before this run: it didn't
+    # exist before, so it must not exist now, and no stray staging/backup
+    # directory should be left behind under .web/ either.
+    thumbs_dir = album_dir / ".web" / "thumbs"
+    assert not thumbs_dir.exists()
+    web_dir = album_dir / ".web"
+    assert list(web_dir.iterdir()) == []
+
+
+def test_generate_assets_atomically_restores_preexisting_thumbnails_on_failure(
+    tmp_path, monkeypatch
+):
+    """Regression test for iteration-2 review finding #2: a partial failure
+    on a RE-publish (the normal steady-state for any album published more
+    than once) must restore the previously-valid thumbnails that existed
+    before this run, not just leave .web/thumbs/ merely non-corrupt.
+
+    The prior "rollback" fix (unlink each already-renamed destination)
+    only covered the first-ever-publish case, where there was nothing to
+    lose. Per-file-rename-into-a-live-directory always overwrites whatever
+    was already at the destination, so unlinking it on failure destroys
+    the just-written file without restoring the old one -- a strictly
+    worse outcome (total data loss) than the bug it was meant to fix. The
+    real fix builds the whole new set in a staging dir and swaps it in as
+    a single directory-level rename, with the previous directory restored
+    on failure.
+    """
+    from prep.cli import ManifestItem, _generate_assets_atomically
+
+    album_dir = tmp_path / "album"
+    album_dir.mkdir()
+    shutil.copy(FIXTURES / "sample_with_exif.jpg", album_dir / "IMG_0001.jpg")
+    shutil.copy(FIXTURES / "sample_no_exif.jpg", album_dir / "IMG_0002.jpg")
+
+    media_items = [ManifestItem(file="IMG_0001.jpg"), ManifestItem(file="IMG_0002.jpg")]
+
+    # Simulate "already published once": run it successfully first, so
+    # .web/thumbs/ holds valid, previously-generated thumbnails.
+    _generate_assets_atomically(album_dir, media_items)
+    thumbs_dir = album_dir / ".web" / "thumbs"
+    old_item1_bytes = (thumbs_dir / "IMG_0001.jpg.jpg").read_bytes()
+    old_item2_bytes = (thumbs_dir / "IMG_0002.jpg.jpg").read_bytes()
+    assert old_item1_bytes and old_item2_bytes
+
+    # Now re-run (e.g. the curator reordered/retouched something) but make
+    # the directory-level swap itself fail partway through, after the new
+    # staging set has already been fully built.
+    real_rename = Path.rename
     call_count = {"n": 0}
 
     def _flaky_rename(self, target):
         call_count["n"] += 1
+        # First call during the swap phase is final_dir -> backup_dir
+        # (must succeed so there's something to restore); second call is
+        # staging -> final_dir (fails here).
         if call_count["n"] == 2:
             raise OSError("simulated rename failure")
         return real_rename(self, target)
@@ -228,12 +292,19 @@ def test_generate_assets_atomically_rolls_back_on_partial_rename_failure(
     with pytest.raises(OSError):
         _generate_assets_atomically(album_dir, media_items)
 
-    # The first item's rename succeeded before the second item's failed --
-    # it must have been rolled back, leaving .web/thumbs/ exactly as it was
-    # before this run (empty).
-    thumbs_dir = album_dir / ".web" / "thumbs"
-    assert not (thumbs_dir / "IMG_0001.jpg.jpg").exists()
-    assert not (thumbs_dir / "IMG_0002.jpg.jpg").exists()
+    # The pre-existing thumbnails from the earlier successful publish must
+    # still be intact and byte-identical -- NOT deleted, NOT replaced with
+    # a half-written new version.
+    assert thumbs_dir.is_dir()
+    assert (thumbs_dir / "IMG_0001.jpg.jpg").read_bytes() == old_item1_bytes
+    assert (thumbs_dir / "IMG_0002.jpg.jpg").read_bytes() == old_item2_bytes
+
+    # No leftover staging/backup directories should remain in .web/.
+    web_dir = album_dir / ".web"
+    leftover = [
+        p for p in web_dir.iterdir() if p.name not in {"thumbs"}
+    ]
+    assert leftover == []
 
 
 def test_publish_album_with_only_notes_falls_back_to_todays_date(tmp_path, monkeypatch):
