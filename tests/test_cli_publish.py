@@ -16,6 +16,7 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
+import prep.cli as cli_module
 from prep.cli import cli
 from prep.render import COVERS_DIRNAME, STATIC_DIRNAME
 
@@ -53,8 +54,20 @@ def _build_album(pictures_root: Path, relpath: str = "2024/Test Album") -> Path:
 
 
 def _invoke_publish(
-    album_dir: Path, pictures_root: Path, site_root: Path, users_path: Path
+    monkeypatch,
+    album_dir: Path,
+    pictures_root: Path,
+    site_root: Path,
+    users_path: Path,
 ):
+    """Invoke `prep publish`, with --caddy-dir pointed at a throwaway tmp
+    dir (so the task-12 Caddyfile regen+reload step at the end of publish
+    never touches the real repo's caddy/ directory) and reload_caddy()
+    stubbed out -- this suite has no real Caddy container, and per the
+    plan, tests must mock/stub reload_caddy() rather than exercise a real
+    subprocess/docker call.
+    """
+    monkeypatch.setattr(cli_module, "reload_caddy", lambda *a, **kw: "reloaded Caddy (stub)")
     runner = CliRunner()
     return runner.invoke(
         cli,
@@ -65,13 +78,15 @@ def _invoke_publish(
             str(pictures_root),
             "--site-root",
             str(site_root),
+            "--caddy-dir",
+            str(pictures_root.parent / "caddy"),
             "--users-file",
             str(users_path),
         ],
     )
 
 
-def test_publish_end_to_end(tmp_path):
+def test_publish_end_to_end(tmp_path, monkeypatch):
     pictures_root = tmp_path / "pictures"
     pictures_root.mkdir()
     album_dir = _build_album(pictures_root)
@@ -79,7 +94,7 @@ def test_publish_end_to_end(tmp_path):
     site_root = tmp_path / "site"
     users_path = tmp_path / "users.yml"
 
-    result = _invoke_publish(album_dir, pictures_root, site_root, users_path)
+    result = _invoke_publish(monkeypatch, album_dir, pictures_root, site_root, users_path)
     assert result.exit_code == 0, result.output
 
     # -- per-album generated files, written directly into the real album dir
@@ -120,7 +135,7 @@ def test_publish_end_to_end(tmp_path):
     assert "Test Album" in site_index_html
 
 
-def test_publish_unknown_user_aborts_cleanly(tmp_path):
+def test_publish_unknown_user_aborts_cleanly(tmp_path, monkeypatch):
     pictures_root = tmp_path / "pictures"
     pictures_root.mkdir()
     album_dir = pictures_root / "2024" / "Bad Album"
@@ -136,7 +151,7 @@ def test_publish_unknown_user_aborts_cleanly(tmp_path):
     site_root = tmp_path / "site"
     users_path = tmp_path / "users.yml"  # no users at all
 
-    result = _invoke_publish(album_dir, pictures_root, site_root, users_path)
+    result = _invoke_publish(monkeypatch, album_dir, pictures_root, site_root, users_path)
 
     assert result.exit_code != 0
     assert "nobody" in result.output
@@ -148,7 +163,7 @@ def test_publish_unknown_user_aborts_cleanly(tmp_path):
     assert not site_root.exists()
 
 
-def test_publish_corrupt_image_aborts_without_partial_thumbnails(tmp_path):
+def test_publish_corrupt_image_aborts_without_partial_thumbnails(tmp_path, monkeypatch):
     pictures_root = tmp_path / "pictures"
     pictures_root.mkdir()
     album_dir = pictures_root / "2024" / "Corrupt Album"
@@ -168,7 +183,7 @@ def test_publish_corrupt_image_aborts_without_partial_thumbnails(tmp_path):
     site_root = tmp_path / "site"
     users_path = tmp_path / "users.yml"
 
-    result = _invoke_publish(album_dir, pictures_root, site_root, users_path)
+    result = _invoke_publish(monkeypatch, album_dir, pictures_root, site_root, users_path)
 
     assert result.exit_code != 0
     assert "IMG_0002.jpg" in result.output

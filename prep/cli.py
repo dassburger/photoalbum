@@ -21,10 +21,18 @@ from prep.assets import (
     thumbnail_path,
     thumbs_dir,
 )
+from prep.caddyconfig import (
+    CADDYFILE_FILENAME,
+    CaddyReloadError,
+    generate_caddyfile,
+    reload_caddy,
+    write_caddyfile,
+)
 from prep.manifest import (
     AlbumInfo,
     ManifestError,
     ManifestItem,
+    discover_albums,
     load_manifest,
     validate_manifest,
 )
@@ -32,6 +40,7 @@ from prep.metadata import VIDEO_EXTENSIONS, get_item_date
 from prep.render import (
     COVERS_DIRNAME,
     AlbumSummary,
+    load_album_summary,
     render_album_page,
     render_albums_index,
     render_picture_pages,
@@ -49,6 +58,7 @@ from prep.users import (
 
 DEFAULT_USERS_PATH = Path("users.yml")
 DEFAULT_SITE_ROOT = Path("site")
+DEFAULT_CADDY_DIR = Path("caddy")
 DEFAULT_PREP_CONFIG_PATH = Path("prep.toml")
 
 
@@ -80,50 +90,6 @@ def users_group():
     """Manage users.yml accounts."""
 
 
-@users_group.command("add")
-@click.argument("username")
-@click.option(
-    "--users-file",
-    "users_path",
-    default=str(DEFAULT_USERS_PATH),
-    show_default=True,
-    type=click.Path(path_type=Path),
-    help="Path to users.yml.",
-)
-def users_add(username: str, users_path: Path):
-    """Add a new user, prompting for a password."""
-    plaintext = click.prompt("Password", hide_input=True, confirmation_prompt=True)
-    data = load_users(users_path)
-    try:
-        add_user(data, username, plaintext)
-    except UserError as exc:
-        raise click.ClickException(str(exc)) from exc
-    save_users(users_path, data)
-    click.echo(f"Added user {username!r}.")
-
-
-@users_group.command("passwd")
-@click.argument("username")
-@click.option(
-    "--users-file",
-    "users_path",
-    default=str(DEFAULT_USERS_PATH),
-    show_default=True,
-    type=click.Path(path_type=Path),
-    help="Path to users.yml.",
-)
-def users_passwd(username: str, users_path: Path):
-    """Change an existing user's password, prompting for a new one."""
-    plaintext = click.prompt("New password", hide_input=True, confirmation_prompt=True)
-    data = load_users(users_path)
-    try:
-        update_password(data, username, plaintext)
-    except UserError as exc:
-        raise click.ClickException(str(exc)) from exc
-    save_users(users_path, data)
-    click.echo(f"Updated password for {username!r}.")
-
-
 def _load_prep_config(path: Path = DEFAULT_PREP_CONFIG_PATH) -> dict:
     """Read prep.toml (see prep.example.toml) if it exists, else {}."""
     path = Path(path)
@@ -143,6 +109,210 @@ def _default_pictures_root() -> Path:
             "pictures_root in prep.toml (see prep.example.toml)."
         )
     return Path(raw)
+
+
+def _default_site_domain() -> str:
+    """Resolve site_domain from prep.toml when --domain isn't given.
+
+    Unlike pictures_root (which has no safe default), a missing/unset
+    domain just falls back to "localhost" -- fine for local/dev runs
+    where Caddy isn't reachable anyway (see reload_caddy's graceful
+    "container not running" skip), and overridable via prep.toml or
+    --domain for a real deployment.
+    """
+    config = _load_prep_config()
+    return str(config.get("site_domain") or "localhost")
+
+
+def _default_acme_email() -> str:
+    """Resolve acme_email from prep.toml when --acme-email isn't given."""
+    config = _load_prep_config()
+    return str(config.get("acme_email") or "admin@localhost")
+
+
+def _caddy_sync_options(f):
+    """Shared options for every command that ends with the Caddyfile
+    regeneration+reload step (task 12): `publish`, `sync-routes`, `users
+    add`, `users passwd`. Stacked as plain click.option decorators so each
+    command gets the same five options with the same defaults/help text.
+    """
+    f = click.option(
+        "--acme-email",
+        "acme_email",
+        default=None,
+        help="ACME/Let's Encrypt contact email. Defaults to prep.toml's acme_email.",
+    )(f)
+    f = click.option(
+        "--domain",
+        "domain",
+        default=None,
+        help="Public domain Caddy serves. Defaults to prep.toml's site_domain.",
+    )(f)
+    f = click.option(
+        "--caddy-dir",
+        "caddy_dir",
+        type=click.Path(path_type=Path),
+        default=str(DEFAULT_CADDY_DIR),
+        show_default=True,
+        help="Directory the generated Caddyfile is written into.",
+    )(f)
+    f = click.option(
+        "--site-root",
+        "site_root",
+        type=click.Path(path_type=Path),
+        default=str(DEFAULT_SITE_ROOT),
+        show_default=True,
+        help="Site-wide output directory (index.html, static/, .covers/).",
+    )(f)
+    f = click.option(
+        "--pictures-root",
+        "pictures_root",
+        type=click.Path(exists=True, file_okay=False, path_type=Path),
+        default=None,
+        help="Root directory containing all albums. Defaults to prep.toml's "
+        "pictures_root.",
+    )(f)
+    return f
+
+
+def _published_albums(pictures_root: Path) -> list[AlbumInfo]:
+    """Every discovered album that has been published at least once (has a
+    .web/album.json) -- the same "known/published albums" set Task 10's
+    albums index and this task's Caddyfile both cover every route for."""
+    return [
+        album
+        for album in discover_albums(pictures_root)
+        if load_album_summary(album.path) is not None
+    ]
+
+
+def sync_caddy_routes(
+    pictures_root: Path,
+    site_root: Path,
+    users_path: Path,
+    caddy_dir: Path,
+    domain: str,
+    acme_email: str,
+) -> str:
+    """Regenerate, write, validate, and (if possible) reload the Caddyfile
+    covering every known published album -- the shared final step for
+    `prep publish`, `prep sync-routes`, `prep users add`, and `prep users
+    passwd` (task 12). Touches no album image/HTML output.
+
+    Returns reload_caddy()'s status string. Raises CaddyReloadError only
+    when the Caddy container is confirmed running but rejects the
+    generated config or the reload itself fails -- callers should turn
+    that into a user-visible error, never swallow it.
+    """
+    pictures_root = Path(pictures_root).resolve()
+    users = load_users(users_path)
+    albums = _published_albums(pictures_root)
+    content = generate_caddyfile(
+        albums, users, domain, acme_email, pictures_root, Path(site_root)
+    )
+    write_caddyfile(Path(caddy_dir) / CADDYFILE_FILENAME, content)
+    return reload_caddy()
+
+
+def _sync_caddy_after_user_change(
+    pictures_root: Path | None,
+    site_root: Path,
+    caddy_dir: Path,
+    domain: str | None,
+    acme_email: str | None,
+    users_path: Path,
+) -> None:
+    """Shared tail end of `users add`/`users passwd`: regenerate+reload the
+    Caddyfile so a password change invalidates the old password
+    immediately, the same as a delete does (task 12/13)."""
+    if pictures_root is None:
+        pictures_root = _default_pictures_root()
+    if domain is None:
+        domain = _default_site_domain()
+    if acme_email is None:
+        acme_email = _default_acme_email()
+    try:
+        status = sync_caddy_routes(
+            Path(pictures_root),
+            Path(site_root),
+            Path(users_path),
+            Path(caddy_dir),
+            domain,
+            acme_email,
+        )
+    except CaddyReloadError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(status)
+
+
+@users_group.command("add")
+@click.argument("username")
+@_caddy_sync_options
+@click.option(
+    "--users-file",
+    "users_path",
+    default=str(DEFAULT_USERS_PATH),
+    show_default=True,
+    type=click.Path(path_type=Path),
+    help="Path to users.yml.",
+)
+def users_add(
+    username: str,
+    pictures_root: Path | None,
+    site_root: Path,
+    caddy_dir: Path,
+    domain: str | None,
+    acme_email: str | None,
+    users_path: Path,
+):
+    """Add a new user, prompting for a password."""
+    plaintext = click.prompt("Password", hide_input=True, confirmation_prompt=True)
+    data = load_users(users_path)
+    try:
+        add_user(data, username, plaintext)
+    except UserError as exc:
+        raise click.ClickException(str(exc)) from exc
+    save_users(users_path, data)
+    click.echo(f"Added user {username!r}.")
+
+    _sync_caddy_after_user_change(
+        pictures_root, site_root, caddy_dir, domain, acme_email, users_path
+    )
+
+
+@users_group.command("passwd")
+@click.argument("username")
+@_caddy_sync_options
+@click.option(
+    "--users-file",
+    "users_path",
+    default=str(DEFAULT_USERS_PATH),
+    show_default=True,
+    type=click.Path(path_type=Path),
+    help="Path to users.yml.",
+)
+def users_passwd(
+    username: str,
+    pictures_root: Path | None,
+    site_root: Path,
+    caddy_dir: Path,
+    domain: str | None,
+    acme_email: str | None,
+    users_path: Path,
+):
+    """Change an existing user's password, prompting for a new one."""
+    plaintext = click.prompt("New password", hide_input=True, confirmation_prompt=True)
+    data = load_users(users_path)
+    try:
+        update_password(data, username, plaintext)
+    except UserError as exc:
+        raise click.ClickException(str(exc)) from exc
+    save_users(users_path, data)
+    click.echo(f"Updated password for {username!r}.")
+
+    _sync_caddy_after_user_change(
+        pictures_root, site_root, caddy_dir, domain, acme_email, users_path
+    )
 
 
 @dataclass
@@ -310,22 +480,7 @@ def _publish_album(
 @click.argument(
     "album_dir", type=click.Path(exists=True, file_okay=False, path_type=Path)
 )
-@click.option(
-    "--pictures-root",
-    "pictures_root",
-    type=click.Path(exists=True, file_okay=False, path_type=Path),
-    default=None,
-    help="Root directory containing all albums. Defaults to prep.toml's "
-    "pictures_root.",
-)
-@click.option(
-    "--site-root",
-    "site_root",
-    type=click.Path(path_type=Path),
-    default=str(DEFAULT_SITE_ROOT),
-    show_default=True,
-    help="Site-wide output directory (index.html, static/, .covers/).",
-)
+@_caddy_sync_options
 @click.option(
     "--users-file",
     "users_path",
@@ -334,7 +489,15 @@ def _publish_album(
     type=click.Path(path_type=Path),
     help="Path to users.yml.",
 )
-def publish(album_dir: Path, pictures_root: Path | None, site_root: Path, users_path: Path):
+def publish(
+    album_dir: Path,
+    pictures_root: Path | None,
+    site_root: Path,
+    caddy_dir: Path,
+    domain: str | None,
+    acme_email: str | None,
+    users_path: Path,
+):
     """Validate, generate assets/pages for ALBUM_DIR, and refresh the site index.
 
     Hard-validation failures (unknown user, missing/work-dir item,
@@ -342,9 +505,18 @@ def publish(album_dir: Path, pictures_root: Path | None, site_root: Path, users_
     this album. Recoverable issues (EXIF/video date fallback) are
     collected and printed as a warning summary at the end of a successful
     run.
+
+    As its last step (task 12), regenerates the Caddyfile covering *all*
+    known published albums (not just this one) and triggers a graceful
+    reload -- tolerated gracefully (not an error) if the Caddy container
+    isn't running.
     """
     if pictures_root is None:
         pictures_root = _default_pictures_root()
+    if domain is None:
+        domain = _default_site_domain()
+    if acme_email is None:
+        acme_email = _default_acme_email()
 
     try:
         result = _publish_album(
@@ -358,6 +530,60 @@ def publish(album_dir: Path, pictures_root: Path | None, site_root: Path, users_
         click.echo(f"{len(result.warnings)} warning(s):")
         for warning in result.warnings:
             click.echo(f"  - {warning}")
+
+    try:
+        status = sync_caddy_routes(
+            Path(pictures_root),
+            Path(site_root),
+            Path(users_path),
+            Path(caddy_dir),
+            domain,
+            acme_email,
+        )
+    except CaddyReloadError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(status)
+
+
+@cli.command("sync-routes")
+@_caddy_sync_options
+@click.option(
+    "--users-file",
+    "users_path",
+    default=str(DEFAULT_USERS_PATH),
+    show_default=True,
+    type=click.Path(path_type=Path),
+    help="Path to users.yml.",
+)
+def sync_routes(
+    pictures_root: Path | None,
+    site_root: Path,
+    caddy_dir: Path,
+    domain: str | None,
+    acme_email: str | None,
+    users_path: Path,
+):
+    """Regenerate, validate, and (if possible) reload the Caddyfile for every
+    known published album, without touching any album image/HTML output."""
+    if pictures_root is None:
+        pictures_root = _default_pictures_root()
+    if domain is None:
+        domain = _default_site_domain()
+    if acme_email is None:
+        acme_email = _default_acme_email()
+
+    try:
+        status = sync_caddy_routes(
+            Path(pictures_root),
+            Path(site_root),
+            Path(users_path),
+            Path(caddy_dir),
+            domain,
+            acme_email,
+        )
+    except CaddyReloadError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(status)
 
 
 if __name__ == "__main__":

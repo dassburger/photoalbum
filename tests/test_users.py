@@ -6,6 +6,7 @@ import bcrypt
 import pytest
 from click.testing import CliRunner
 
+import prep.cli as cli_module
 from prep.cli import cli
 from prep.users import (
     UserError,
@@ -15,6 +16,31 @@ from prep.users import (
     save_users,
     update_password,
 )
+
+
+def _invoke_users(monkeypatch, tmp_path, args, input=None):
+    """Invoke a `users` subcommand with --pictures-root/--caddy-dir pointed
+    at throwaway tmp dirs (so the task-12 Caddyfile regen+reload step at
+    the end of `users add`/`users passwd` never touches the real repo's
+    caddy/ directory), and reload_caddy() stubbed out -- this suite has no
+    real Caddy container, and per the plan, tests must mock/stub
+    reload_caddy() rather than exercise a real subprocess/docker call.
+    """
+    monkeypatch.setattr(cli_module, "reload_caddy", lambda *a, **kw: "reloaded Caddy (stub)")
+    pictures_root = tmp_path / "pictures"
+    pictures_root.mkdir(exist_ok=True)
+    runner = CliRunner()
+    return runner.invoke(
+        cli,
+        [
+            *args,
+            "--pictures-root",
+            str(pictures_root),
+            "--caddy-dir",
+            str(tmp_path / "caddy"),
+        ],
+        input=input,
+    )
 
 
 def test_load_users_missing_file_returns_empty_mapping(tmp_path):
@@ -89,11 +115,11 @@ def test_update_password_unknown_user_raises():
         update_password(data, "nobody", "whatever")
 
 
-def test_cli_users_add_creates_user(tmp_path):
+def test_cli_users_add_creates_user(tmp_path, monkeypatch):
     users_path = tmp_path / "users.yml"
-    runner = CliRunner()
-    result = runner.invoke(
-        cli,
+    result = _invoke_users(
+        monkeypatch,
+        tmp_path,
         ["users", "add", "alice", "--users-file", str(users_path)],
         input="s3cret\ns3cret\n",
     )
@@ -101,18 +127,20 @@ def test_cli_users_add_creates_user(tmp_path):
     data = load_users(users_path)
     assert "alice" in data
     assert bcrypt.checkpw(b"s3cret", data["alice"].encode("utf-8"))
+    assert "reloaded Caddy (stub)" in result.output
 
 
-def test_cli_users_add_duplicate_errors(tmp_path):
+def test_cli_users_add_duplicate_errors(tmp_path, monkeypatch):
     users_path = tmp_path / "users.yml"
-    runner = CliRunner()
-    runner.invoke(
-        cli,
+    _invoke_users(
+        monkeypatch,
+        tmp_path,
         ["users", "add", "alice", "--users-file", str(users_path)],
         input="s3cret\ns3cret\n",
     )
-    result = runner.invoke(
-        cli,
+    result = _invoke_users(
+        monkeypatch,
+        tmp_path,
         ["users", "add", "alice", "--users-file", str(users_path)],
         input="s3cret\ns3cret\n",
     )
@@ -120,19 +148,20 @@ def test_cli_users_add_duplicate_errors(tmp_path):
     assert "already exists" in result.output
 
 
-def test_cli_users_passwd_updates_password(tmp_path):
+def test_cli_users_passwd_updates_password(tmp_path, monkeypatch):
     users_path = tmp_path / "users.yml"
-    runner = CliRunner()
-    runner.invoke(
-        cli,
+    _invoke_users(
+        monkeypatch,
+        tmp_path,
         ["users", "add", "alice", "--users-file", str(users_path)],
         input="old-pass\nold-pass\n",
     )
     data_before = load_users(users_path)
     old_hash = data_before["alice"]
 
-    result = runner.invoke(
-        cli,
+    result = _invoke_users(
+        monkeypatch,
+        tmp_path,
         ["users", "passwd", "alice", "--users-file", str(users_path)],
         input="new-pass\nnew-pass\n",
     )
@@ -140,13 +169,14 @@ def test_cli_users_passwd_updates_password(tmp_path):
     data_after = load_users(users_path)
     assert data_after["alice"] != old_hash
     assert bcrypt.checkpw(b"new-pass", data_after["alice"].encode("utf-8"))
+    assert "reloaded Caddy (stub)" in result.output
 
 
-def test_cli_users_passwd_unknown_user_errors(tmp_path):
+def test_cli_users_passwd_unknown_user_errors(tmp_path, monkeypatch):
     users_path = tmp_path / "users.yml"
-    runner = CliRunner()
-    result = runner.invoke(
-        cli,
+    result = _invoke_users(
+        monkeypatch,
+        tmp_path,
         ["users", "passwd", "nobody", "--users-file", str(users_path)],
         input="new-pass\nnew-pass\n",
     )
