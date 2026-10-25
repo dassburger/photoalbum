@@ -1,0 +1,201 @@
+"""Tests for prep.manifest: publish.yaml load/validate and discover_albums()."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+import pytest
+
+from prep.manifest import (
+    AlbumInfo,
+    ManifestError,
+    discover_albums,
+    load_manifest,
+    validate_manifest,
+)
+
+FIXTURES = Path(__file__).parent / "fixtures"
+SAMPLE_ALBUM = FIXTURES / "sample_album"
+
+
+def _touch(path: Path, mtime_offset_seconds: float, content: bytes = b"x") -> None:
+    """Create a file with a deterministic mtime, offset from a fixed epoch."""
+    path.write_bytes(content)
+    base = 1_700_000_000
+    ts = base + mtime_offset_seconds
+    os.utime(path, (ts, ts))
+
+
+# -- load_manifest: title -----------------------------------------------
+
+
+def test_load_manifest_title_defaults_to_folder_name(tmp_path):
+    album_dir = tmp_path / "My Album"
+    album_dir.mkdir()
+    manifest = load_manifest(album_dir)
+    assert manifest.title == "My Album"
+
+
+def test_load_manifest_title_explicit():
+    manifest = load_manifest(SAMPLE_ALBUM)
+    assert manifest.title == "Sample Album"
+
+
+def test_load_manifest_defaults_public_false_and_no_users(tmp_path):
+    album_dir = tmp_path / "album"
+    album_dir.mkdir()
+    manifest = load_manifest(album_dir)
+    assert manifest.public is False
+    assert manifest.allowed_users == []
+    assert manifest.items == []
+
+
+# -- load_manifest: explicit items ----------------------------------------
+
+
+def test_load_manifest_explicit_items_preserves_manifest_order():
+    manifest = load_manifest(SAMPLE_ALBUM)
+    assert [item.file or item.note for item in manifest.items] == [
+        "IMG_0001.jpg",
+        "IMG_0002.jpg",
+        "This was a great day.",
+        "VID_0003.mp4",
+    ]
+    assert manifest.items[2].is_note is True
+    assert manifest.items[0].is_note is False
+
+
+def test_load_manifest_explicit_items_not_resorted_even_if_dates_disagree(tmp_path):
+    album_dir = tmp_path / "album"
+    album_dir.mkdir()
+    # IMG_0002 is older than IMG_0001 on disk, but items lists 0001 first —
+    # that written order must win, not chronological order.
+    _touch(album_dir / "IMG_0001.jpg", 100)
+    _touch(album_dir / "IMG_0002.jpg", 0)
+    (album_dir / "publish.yaml").write_text(
+        "items:\n  - file: IMG_0001.jpg\n  - file: IMG_0002.jpg\n"
+    )
+
+    manifest = load_manifest(album_dir)
+    assert [item.file for item in manifest.items] == ["IMG_0001.jpg", "IMG_0002.jpg"]
+
+
+# -- load_manifest: auto-population ----------------------------------------
+
+
+def test_load_manifest_auto_populates_items_sorted_by_date(tmp_path):
+    album_dir = tmp_path / "album"
+    album_dir.mkdir()
+    _touch(album_dir / "c.jpg", 200)
+    _touch(album_dir / "a.jpg", 0)
+    _touch(album_dir / "b.mp4", 100)
+    # Not whitelisted — must never appear in the auto-populated items.
+    _touch(album_dir / "raw.CR2", 50)
+    _touch(album_dir / "notes.xmp", 50)
+    work_dir = album_dir / "work"
+    work_dir.mkdir()
+    _touch(work_dir / "hidden.jpg", 0)
+
+    manifest = load_manifest(album_dir)
+
+    assert [item.file for item in manifest.items] == ["a.jpg", "b.mp4", "c.jpg"]
+
+
+def test_load_manifest_auto_population_excludes_manifest_file_itself(tmp_path):
+    album_dir = tmp_path / "album"
+    album_dir.mkdir()
+    _touch(album_dir / "a.jpg", 0)
+    (album_dir / "publish.yaml").write_text("public: true\n")
+
+    manifest = load_manifest(album_dir)
+    assert [item.file for item in manifest.items] == ["a.jpg"]
+
+
+# -- validate_manifest: hard failures --------------------------------------
+
+
+def test_validate_manifest_passes_for_valid_manifest():
+    manifest = load_manifest(SAMPLE_ALBUM)
+    users = {"alice": "hash", "bob": "hash"}
+    validate_manifest(manifest, users)  # must not raise
+
+
+def test_validate_manifest_unknown_user_raises():
+    manifest = load_manifest(SAMPLE_ALBUM)
+    users = {"bob": "hash"}  # "alice" (from allowed_users) is missing
+    with pytest.raises(ManifestError, match="alice"):
+        validate_manifest(manifest, users)
+
+
+def test_validate_manifest_missing_file_raises(tmp_path):
+    album_dir = tmp_path / "album"
+    album_dir.mkdir()
+    (album_dir / "publish.yaml").write_text(
+        "items:\n  - file: does_not_exist.jpg\n"
+    )
+    manifest = load_manifest(album_dir)
+    with pytest.raises(ManifestError, match="does_not_exist.jpg"):
+        validate_manifest(manifest, {})
+
+
+def test_validate_manifest_item_inside_work_raises(tmp_path):
+    album_dir = tmp_path / "album"
+    album_dir.mkdir()
+    work_dir = album_dir / "work"
+    work_dir.mkdir()
+    (work_dir / "secret.jpg").write_bytes(b"x")
+    (album_dir / "publish.yaml").write_text(
+        "items:\n  - file: work/secret.jpg\n"
+    )
+    manifest = load_manifest(album_dir)
+    with pytest.raises(ManifestError, match="work"):
+        validate_manifest(manifest, {})
+
+
+def test_validate_manifest_notes_are_never_checked_as_files():
+    album_dir = SAMPLE_ALBUM
+    manifest = load_manifest(album_dir)
+    # The sample album's note item has no backing file; this must not be
+    # treated as a missing-file error.
+    validate_manifest(manifest, {"alice": "hash"})
+
+
+# -- discover_albums --------------------------------------------------------
+
+
+def test_discover_albums_finds_all_manifests(tmp_path):
+    root = tmp_path / "Pictures"
+    root.mkdir()
+
+    album_a = root / "2024" / "Trip"
+    album_a.mkdir(parents=True)
+    (album_a / "publish.yaml").write_text("title: Trip\n")
+
+    album_b = root / "2023" / "Reunion"
+    album_b.mkdir(parents=True)
+    (album_b / "publish.yaml").write_text("title: Reunion\n")
+
+    # A publish.yaml accidentally sitting under a work/ dir must be ignored.
+    bogus = root / "2024" / "Trip" / "work"
+    bogus.mkdir()
+    (bogus / "publish.yaml").write_text("title: Bogus\n")
+
+    # A folder with no publish.yaml at all is simply not an album.
+    (root / "2024" / "NotAnAlbum").mkdir(parents=True)
+
+    albums = discover_albums(root)
+
+    assert all(isinstance(a, AlbumInfo) for a in albums)
+    titles = sorted(a.manifest.title for a in albums)
+    assert titles == ["Reunion", "Trip"]
+    paths = {a.path for a in albums}
+    assert album_a in paths
+    assert album_b in paths
+    assert bogus not in paths
+
+
+def test_discover_albums_empty_root_returns_empty_list(tmp_path):
+    root = tmp_path / "Pictures"
+    root.mkdir()
+    assert discover_albums(root) == []

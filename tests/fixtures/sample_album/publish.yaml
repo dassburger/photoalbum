@@ -1,0 +1,9 @@
+title: "Sample Album"
+public: false
+allowed_users: [alice]
+
+items:
+  - file: IMG_0001.jpg
+  - file: IMG_0002.jpg
+  - note: "This was a great day."
+  - file: VID_0003.mp4

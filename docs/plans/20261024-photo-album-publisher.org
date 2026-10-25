@@ -363,21 +363,21 @@ can't simulate.
 - [X] run tests — must pass before task 4
 - ⚠️ =ffmpeg=/=ffprobe= are not installed in this dev sandbox (host), so the real =ffprobe=-reading path (=test_get_video_date_uses_ffprobe_when_available=) is skipped here rather than exercised; it will run for real once Task 16's container (which installs ffmpeg) runs the suite via =docker compose run --rm prep pytest=. =tests/fixtures/sample.mp4= is a minimal hand-built placeholder MP4 container (ftyp+mdat boxes only, not a real encoded video) since ffmpeg wasn't available to generate a real one — sufficient for extension-dispatch and mtime-fallback tests, but not a playable video; revisit if Task 6/16 needs a real sample video for poster-frame generation tests.
 
-*** TODO Task 4: publish.yaml manifest module
+*** DONE Task 4: publish.yaml manifest module
 
 *Files:*
 - Create: =prep/manifest.py=
 - Create: =tests/test_manifest.py=
 - Create: =tests/fixtures/sample_album/publish.yaml=
 
-- [ ] define a =Manifest= model (title, public, allowed_users, items) and =load_manifest(album_dir)= using =ruamel.yaml=, defaulting =title= to the folder name when absent
-- [ ] implement validation: hard error if any =allowed_users= entry isn't in a given loaded =users.yml=, hard error if any explicit =items= file entry doesn't exist on disk (hard error also if an =items= entry points inside =work/=, since that content must never be published)
-- [ ] implement auto-population: when =items= is omitted, scan the album directory (excluding =work/=) for files matching a fixed whitelist of photo/video extensions (=.jpg=/=.jpeg= and the handful of video extensions =prep/assets.py= supports — explicitly *not* =.CR2=, =.xmp=, or anything else) and sort them using =prep/metadata.py= dates, building the implicit =items= list
-- [ ] codify the ordering rule used everywhere downstream: when =items= is explicit, that order is authoritative and is *not* re-sorted chronologically — day-grouping (Task 5) buckets items by date purely for the separator, it never reorders them. A =note= entry has no date of its own; it's attached to the day of the item immediately preceding it in =items= (or the following item's day, if the note is first)
-- [ ] implement =discover_albums(pictures_root) -> list[AlbumInfo]= that walks a root directory for every =publish.yaml= and returns path + loaded manifest for each (used later by index rendering and Caddy config generation)
-- [ ] write tests for manifest loading (title default, explicit items, auto-populated items ordering) and both hard-failure validation cases
-- [ ] write tests for =discover_albums= against a small fixture tree with 2-3 album folders
-- [ ] run tests — must pass before task 5
+- [X] define a =Manifest= model (title, public, allowed_users, items) and =load_manifest(album_dir)= using =ruamel.yaml=, defaulting =title= to the folder name when absent
+- [X] implement validation: hard error if any =allowed_users= entry isn't in a given loaded =users.yml=, hard error if any explicit =items= file entry doesn't exist on disk (hard error also if an =items= entry points inside =work/=, since that content must never be published)
+- [X] implement auto-population: when =items= is omitted, scan the album directory (excluding =work/=) for files matching a fixed whitelist of photo/video extensions (=.jpg=/=.jpeg= and the handful of video extensions =prep/assets.py= supports — explicitly *not* =.CR2=, =.xmp=, or anything else) and sort them using =prep/metadata.py= dates, building the implicit =items= list
+- [X] codify the ordering rule used everywhere downstream: when =items= is explicit, that order is authoritative and is *not* re-sorted chronologically — day-grouping (Task 5) buckets items by date purely for the separator, it never reorders them. A =note= entry has no date of its own; it's attached to the day of the item immediately preceding it in =items= (or the following item's day, if the note is first)
+- [X] implement =discover_albums(pictures_root) -> list[AlbumInfo]= that walks a root directory for every =publish.yaml= and returns path + loaded manifest for each (used later by index rendering and Caddy config generation)
+- [X] write tests for manifest loading (title default, explicit items, auto-populated items ordering) and both hard-failure validation cases
+- [X] write tests for =discover_albums= against a small fixture tree with 2-3 album folders
+- [X] run tests — must pass before task 5
 
 *** TODO Task 5: Day-grouping and irregular grid layout algorithm
 
