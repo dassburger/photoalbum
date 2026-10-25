@@ -1,0 +1,32 @@
+* Problem Statement
+Let's create a photo-album project.  I have a photo archive in ~/Pictures, albums are directories/folders inside.  I want to publish them as a web-application.  It should have some albums published anonymously (optional feature), but also have most of the folders under a password.
+
+* Desired User Experience
+The application should be suitable for opening on a computer, a phone, a tablet PC, or a smart TV (using its web-browser).  If the screen of the device is narrow (a phone), the app should dynamically rearrange pictures tiles to suite the screen.
+
+The album hosts both pictures and videos.  Whenever I say a "picture" in the requirements it assumes it can be a video file also.
+
+** Albums Directory
+The main page is the list of albums.  Top-down are years (latest to oldest) and months (January to December).  Albums are shown as big tiles, up to two in a row.  The tile picture shows a couple of thumbnails from the album's pictures, in a slightly scattered overlayed manner (as if these were a slightly displaced stack of printed pictures lying on the table).  Below the tile picture is the album title (folder name).  Clicking on a tile opens that album.  Each album should have its own URL, so they can be bookmarked.
+
+** Album Page
+The album page looks like a grid of pictures, scrollable by swiping/dragging, or by using left/right buttons that appear on the sides of the screen when hovered by mouse. 
+
+The pictures are to be layed out in a non-even grid (not like regular table!).  Imagine a paper photoalbum with large pages, where I can glue on pictures in arbitrary order and layout.  Pictures should be layed out chronologically, according to the metadata in the files.  Visually, they may be divided into days, with a vertical date separator line.  Please offer a way to layout the pictures thumbnails chronologically within the same day, so that it is naturally obvious to the viewer which picture was taken first, then next.
+
+Occasionally, between pictures I'd like to put some text notes - they should be displayed in a font size chosen to be as large as possible, but fitting within the slot for that text - these are some random notes and feeling about pictures around this slot.
+
+When opened on a small screen (phone), all layout simplifies automatically to just vertical stack.
+
+Clicking on a picture thumbnail opens the picture full-screen, see the next section.
+
+** Picture View
+Picture view shows the original JPEG or video file.  For video files, I want to rely on the browser's native video player, if possible.  If it is a picture, the viewer can scroll to the next/previous one by either swiping left/right, or by clicking a left/right buttons that appear on the sides of the screen when hovered by mouse, or by pressing left/right buttons on the keyboard.  Additionally, <SPC> key serves as "next" shortcut.  Please offer a way for scrolling for the video view.
+
+Each picture should have its own URL, bookmarkable.
+
+* Non-Functional Requirements
+The application should be as simple as possible, preferably, just serving static files.  I'm fine running some scripts to prepare new albums for publishing by creating the required static HTML/JS files.  Keep in mind, that the same album folders also host Darktable project files, as well as raw pictures in CR2.  I want to publish JPEGs only.  You can offer a directory structure to separate work in progress from files ready for publishing.
+
+Authz should be managed by something like a reverse proxy, like reproxy.  Ideally, there should be an admin interface (this can't be static files, of course) where I can manage users and (optional feature) albums they have access to.  The whole project should be organized as a docker-compose environment that brings everything up.  I will host this application on this computer, and make it available by a socat tunnel to my Internet host in DigitalOcean under a VPN tunnel (I use wireguard), so there should be a README file explaining how to bring up this tunnel and setup the Internet host.
+

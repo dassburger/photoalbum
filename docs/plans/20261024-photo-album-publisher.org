@@ -1,0 +1,625 @@
+* Photo Album Publisher
+
+** Overview
+Build a system to publish curated albums from the =~/Pictures= photo archive
+as a password-protected (with optional public albums) responsive web photo
+gallery, per =initial-prompt.org=. The system has exactly two moving parts:
+
+- A Python CLI (=prep=), run by hand inside its own container, that reads
+  per-album manifests from =~/Pictures=, extracts photo/video metadata,
+  generates thumbnails/poster-frames and fully static HTML directly inside
+  each album's own folder (plus a small site-wide output directory for the
+  top-level index/static assets/public covers), and regenerates Caddy's
+  routing/auth config.
+- Caddy, the only continuously-running container, serving the real
+  =~/Pictures= tree (plus the small site-wide output directory) over HTTPS
+  (automatic Let's Encrypt renewal) with per-album HTTP Basic Auth, blocking
+  work-in-progress content via a =path= matcher plus =respond ... 404= in
+  each album's route.
+
+No database, no backend service, no admin web UI. User accounts and
+per-album access lists are plain YAML files hand-edited (and CLI-managed)
+alongside the album manifests. Original photos/videos in =~/Pictures= are
+never copied or modified — Caddy serves them directly. The only new things
+written into =~/Pictures= are generated artifacts (thumbnails/poster frames
+under a =.web/= subdirectory, and the generated =index.html= and =picture/*.html=
+pages) placed alongside the originals; nothing existing is ever touched.
+Neither Pillow, ffmpeg, nor any other =prep= dependency is ever installed on
+the host — =prep= runs inside its own container image.
+
+** Context (from discovery)
+- Source of truth for requirements: =initial-prompt.org= (problem statement,
+  desired UX for albums index / album page / picture view, non-functional
+  requirements around static-file simplicity, Darktable/CR2 coexistence,
+  reverse-proxy auth, docker-compose, and the tunnel/VPN deployment).
+- This repo is currently empty (freshly =git init='d) aside from
+  =initial-prompt.org= — no existing code, patterns, or dependencies to
+  reconcile with.
+- Full architecture, file formats, and UX behavior were settled through an
+  interactive brainstorm (see conversation); this plan operationalizes those
+  decisions. Key decisions are restated in "Solution Overview" below so this
+  plan is self-contained.
+
+** Development Approach
+- *Testing approach*: Regular (implement, then write tests for it in the same
+  task) — chosen because the grid-layout algorithm and HTML/CSS output are
+  easier to get right by iterating on visible results first.
+- Complete each task fully, including its tests, before moving to the next.
+- Make small, focused changes; avoid speculative abstraction (YAGNI).
+- *CRITICAL: every task that touches code MUST include new/updated tests*
+  for that code — success and error/edge cases both.
+- *CRITICAL: all tests must pass before starting the next task* — no
+  exceptions.
+- *CRITICAL: update this plan file when scope changes during implementation.*
+- Fail loudly and early for anything that would silently publish something
+  wrong (unknown user referenced, missing file referenced, corrupt/unreadable
+  image). Warn, don't fail, for recoverable issues (missing EXIF date falling
+  back to file mtime).
+- Never hand-write raw CSS into HTML or JS. All styling lives in semantic,
+  per-component CSS files; templates and JS reference only class names, with
+  one narrow exception (see Solution Overview): a =style= attribute may set
+  CSS custom properties only, never literal property values, where per-
+  instance values (grid placement, scatter offsets, fitted note size) have
+  no finite class enumeration.
+- Because generated files are now written directly inside the real album
+  folder (no disposable mirror to discard on failure), every write that
+  touches a real album folder must be crash-safe: write to a temp path and
+  atomically rename into place, and run all hard-validation checks *before*
+  writing anything for that album. A failed/interrupted run must never leave
+  partial generated files mixed in with the user's real photos.
+
+** Testing Strategy
+- *Unit tests* (pytest): required for every task producing non-trivial logic
+  — manifest parsing/validation, EXIF/video metadata extraction with
+  fallback, day-grouping, the grid-position algorithm, users.yml/publish.yaml
+  round-trip editing, and Caddy config generation.
+- *Fixture-based tests*: small sample JPEG/MP4 files checked into
+  =tests/fixtures/= for thumbnail/poster-frame generation tests.
+- *No automated visual testing* of generated HTML/CSS/JS — rely on manual
+  spot-checking of the rendered site in a browser (see Post-Completion).
+- All tests run via =pytest= from the repo root during development; once
+  Task 16 exists, the same suite also runs with no host Python/Pillow/ffmpeg
+  install at all via =docker compose run --rm prep pytest=.
+
+** Progress Tracking
+- Mark completed items with =[X]= immediately when done.
+- Add newly discovered tasks with an "➕" prefix.
+- Document issues/blockers with a "⚠️" prefix.
+- Keep this plan in sync with actual work done; update scope here if it
+  deviates from what's written.
+
+** Solution Overview
+- *Stack*: Python (Pillow, piexif, ffmpeg/ffprobe via subprocess,
+  Jinja2, ruamel.yaml, bcrypt, click, pytest) for the =prep= CLI, packaged as
+  its own Docker image so none of it touches the host. Plain HTML/CSS/vanilla
+  JS for the frontend — no build step, no JS framework. Caddy for TLS
+  termination, static serving, and per-path Basic Auth.
+- *Why Caddy, not reproxy or nginx*: Caddy has long-proven built-in automatic
+  Let's Encrypt renewal, built-in =file_server= (with a =hide= subdirective
+  and =not path= matchers precise enough to implement our exclusion rules
+  without a mirror — see below), built-in per-path =basic_auth= with bcrypt,
+  and a graceful reload (=docker compose exec caddy caddy reload=, see Task
+  12) — matching what we need with the least moving parts. (reproxy has no
+  equivalent exclusion mechanism; nginx's native ACME support is new,
+  HTTP-01-only, and not default-enabled.)
+- *Why no backend/database*: individual accounts + per-album ACLs are fully
+  expressible as Caddy's per-path =basic_auth= matchers within a single site
+  block, generated from two YAML sources. Removing the backend removes an
+  entire running service and its failure modes.
+- *Why serve =~/Pictures= directly, with no symlink mirror*: within each
+  album's own route, a =path= matcher (e.g. =path /work/* /publish.yaml=)
+  combined with =respond ... 404= blocks exactly =work/= (at any depth —
+  Caddy documents a trailing =/*= as covering nested directories) and
+  =publish.yaml=, before =file_server= ever runs. This is deliberately *not*
+  =file_server='s =hide= subdirective: Caddy's own docs note =hide= is a
+  "pretend it doesn't exist" convenience for serving/listing, not a security
+  boundary, and its comparison is case-sensitive (a mismatched-case request
+  on a case-insensitive filesystem could slip through) — a =path= matcher is
+  case-insensitive and is a real routing decision. An earlier design built a
+  parallel tree of symlinks back into =~/Pictures=
+  as a per-file whitelist, to guarantee an un-curated JPEG could never be
+  served even by direct URL guess. That guarantee is now relaxed in favor of
+  simplicity: *every* file inside an album folder except the fixed =work/=
+  subdirectory and =publish.yaml= is reachable if someone knows/guesses its
+  exact URL, even if it isn't in the manifest's =items= list and so appears
+  on no page and is linked from nowhere. This is accepted as a workflow
+  convention (keep anything not ready to publish inside =work/=) rather than
+  a technical guarantee, in exchange for a much simpler system: no mirror to
+  build/maintain, no dual bind-mount, and the Caddyfile never needs
+  regenerating just because an album's =items= changed (only ACL/user/album
+  changes still require that, exactly as before).
+- *Why generated HTML lives in the album folder root, not under =.web/=*:
+  thumbnails and poster-frames (many small binary files) go under
+  =<album>/.web/thumbs/= to avoid cluttering the folder when browsing it
+  normally, but the two bookmarkable HTML artifacts — the album grid page and
+  each picture's page — are written directly as =<album>/index.html= and
+  =<album>/picture/<name>.html=. This means Caddy needs *zero* rewrite rules:
+  a plain =file_server= on the real album directory already serves
+  =/album/= and =/album/picture/IMG_0001.html= correctly via its own default
+  index-file behavior, with the =path=-matcher-plus-=respond= block (see
+  above) covering =work/= and =publish.yaml=. The alternative (everything,
+  including HTML, under
+  =.web/=) was considered and rejected because it would require per-album
+  Caddy =rewrite= rules mapping clean URLs to =.web/= paths — real added
+  complexity for a cosmetic benefit.
+- *Why =prep= runs in its own container*: Pillow, piexif, ffmpeg/ffprobe,
+  bcrypt, etc. never get installed on the host. =prep= is built as a Docker
+  image (Task 16) and invoked ad hoc via =docker compose run --rm prep
+  <args>= — it's not a long-running service, so it isn't part of =docker
+  compose up=, only =docker compose run=.
+- *Inline =style= attributes — the one narrow exception*: "never raw CSS in
+  HTML/JS" does not forbid a =style= attribute that sets *only* CSS custom
+  properties consumed by a predefined class rule (e.g.
+  =style="--row: 3; --col-span: 2"= feeding =.album-tile { grid-row:
+  var(--row) / span 1; }=). It forbids literal property values
+  (=style="color: red"=). This is required because per-item grid placement
+  and index cover-scatter offsets are computed per-instance in Python and
+  have no finite class enumeration. Task 7's "no inline styles" test enforces
+  this narrower rule, not a blanket ban on the =style= attribute.
+- *Index privacy tradeoff (flagged for your review)*: the albums index needs
+  to show every album's title and cover thumbnails to work as a single public
+  landing page (including for anonymous visitors and as the logout
+  redirect target), but cover thumbnails for *private* albums live inside
+  that album's auth-protected folder. Resolution: =prep publish= also copies
+  each album's chosen cover thumbnails into a separate, always-public
+  =site/.covers/<album-path>/= directory (outside =~/Pictures= entirely, in
+  the project repo's generated output). This means a private album's *title
+  and 2-3 small cover thumbnails* are visible to anyone who can reach the
+  index at all (not the full album content, which stays behind that album's
+  password) — a deliberate, modest metadata leak consistent with the
+  low-stakes "family-shared album" risk tolerance already agreed on. Revisit
+  this if it's not acceptable once you see it rendered.
+- *Remote "admin" access without a web admin UI*: instead of a bespoke admin
+  interface, the user will occasionally run a Claude Code instance inside
+  this project directory with Remote Control enabled, so adjustments (adding
+  a user, editing a =publish.yaml=, re-running =prep publish=, checking
+  =prep sync-routes= output) can be made conversationally from another
+  device while away from this computer. This requires no new code — it's a
+  documented operating pattern, covered in the README (see Task 18).
+- *Why manifests inside the album folder*: keeps curation (notes, ordering,
+  access list) colocated with the photos it describes, matching how the user
+  already works with Darktable project files per-folder. Risk of leaking
+  passwords is moot since only usernames (never hashes) appear there, and
+  =publish.yaml= itself is hidden from Caddy's =file_server= so it's never
+  web-reachable regardless.
+- *Why fully static, server-rendered HTML* (vs. a JSON+SPA or hybrid
+  approach): every album/picture needs its own bookmarkable URL; generating
+  real =.html= files gives that for free, requires no client-side router, and
+  keeps the "just serving static files" requirement exactly true. JS is
+  strictly a progressive enhancement (swipe, keyboard nav, hover buttons) —
+  core navigation works via plain =<a href>= links with no JS at all.
+
+** Technical Details
+
+*** Repository layout
+#+begin_example
+album-project/
+  prep/                      # Python package
+    __init__.py
+    cli.py                   # click entrypoint: publish, sync-routes,
+                              #   hash-password, users add/passwd/delete
+    users.py                 # users.yml load/save/add/update/remove, bcrypt
+    manifest.py              # publish.yaml model, load/validate/save,
+                              #   discover_albums() across the pictures root
+    metadata.py              # EXIF/ffprobe date extraction w/ fallback
+    layout.py                # day-grouping + irregular grid position algo
+    assets.py                # thumbnail + video poster-frame generation,
+                              #   written into <album>/.web/thumbs/
+    render.py                # Jinja2 rendering: album page + picture pages
+                              #   (written directly into the real album
+                              #   folder) and the site-wide albums index
+                              #   (written into site/)
+    caddyconfig.py           # Caddyfile generation from users.yml + manifests
+    Dockerfile                # containerizes prep — see Task 16
+    templates/
+      base.html
+      albums_index.html
+      album_page.html
+      picture_view.html
+    static/                  # shared CSS/JS, synced into site/static/
+      base.css
+      albums-index.css
+      album-page.css
+      picture-view.css
+      album-page.js
+      picture-view.js
+      logout.js
+  tests/
+    fixtures/                # tiny sample .jpg/.mp4 files
+    test_users.py
+    test_manifest.py
+    test_metadata.py
+    test_layout.py
+    test_assets.py
+    test_render.py
+    test_caddyconfig.py
+    test_cli_publish.py
+  users.yml                  # created by `prep users add`
+  site/                      # generated output (gitignored): top-level
+                              #   index.html, static/, .covers/ only — NOT
+                              #   per-album content, which is generated
+                              #   directly inside each album's own folder
+                              #   under ~/Pictures
+  caddy/
+    Caddyfile                # generated by `prep sync-routes` (gitignored;
+                              #   lives in a mounted directory, not mounted
+                              #   as a single file — see Task 17)
+  Caddyfile.example           # checked-in reference, not machine-generated
+  docker-compose.yml
+  pyproject.toml
+  README.md
+  .gitignore
+#+end_example
+
+*** =publish.yaml= (one per album, inside =~/Pictures/<album>/=)
+#+begin_example
+title: "Family Reunion 2024"     # optional, defaults to folder name
+public: false
+allowed_users: [alice, bob]       # ignored if public: true
+
+items:                            # optional; auto-populated by date if omitted
+  - file: IMG_0001.jpg
+  - file: IMG_0002.jpg
+  - note: "This was the day it rained the whole afternoon..."
+  - file: VID_0003.mp4
+  - file: IMG_0004.jpg
+#+end_example
+A =work/= subdirectory inside the album folder (fixed name, not configurable)
+holds CR2s, Darktable project files, and rejected JPEGs. Both =work/= and
+=publish.yaml= itself are blocked by a =path= matcher plus =respond ... 404=
+in the album's generated Caddy route (case-insensitive, covering nested
+directories under =work/=) and so are never web-reachable, regardless of
+what =items= does or doesn't reference.
+
+*** =users.yml= (project repo root)
+#+begin_example
+alice: $2y$10$abc123...
+bob: $2y$10$def456...
+#+end_example
+Only bcrypt hashes; plaintext passwords never touch disk. Edited by hand or
+via =prep users add/passwd/delete=, always through =ruamel.yaml= round-trip
+mode so comments/order/formatting survive script-driven edits.
+
+*** Processing flow (=prep publish <album-folder>=)
+1. Parse and validate =publish.yaml= (hard-fail on unknown user or missing
+   referenced file) *before* writing anything.
+2. Extract per-item metadata (EXIF date / ffprobe creation time, mtime
+   fallback with a warning). GPS EXIF is left untouched.
+3. Generate thumbnails and video poster-frames directly into
+   =<album>/.web/thumbs/= (atomic write-then-rename), removing any
+   thumbnails left over from items no longer in the manifest, and copy the
+   chosen index-cover thumbnails into the always-public
+   =site/.covers/<album>/=.
+4. Group items by local day; compute grid positions.
+5. Render the album page directly to =<album>/index.html=, one picture-view
+   page per item directly to =<album>/picture/<name>.html= (removing any
+   page left over from an item no longer in the manifest), write this
+   album's =.web/album.json= summary, and re-render the top-level
+   =site/index.html= (across *all* previously-published albums).
+6. Sync shared static assets into =site/static/= (cheap, idempotent).
+7. Regenerate the full Caddyfile (all known albums, not just this one) — each
+   album route's =root= points directly at its real folder under the mounted
+   =~/Pictures=, with a =path= matcher plus =respond ... 404= blocking
+   =work/= and =publish.yaml= before =file_server= runs — validate it, and
+   trigger a graceful reload via =docker compose exec=.
+
+** What Goes Where
+*** Implementation Steps
+See checkboxes below — all achievable within this repo: CLI, rendering,
+config generation, frontend assets, docker-compose, README, tests.
+
+*** Post-Completion
+Manual verification of the rendered site in real browsers/devices, actual
+DNS/tunnel/WireGuard setup against the real DigitalOcean host, and real
+Let's Encrypt issuance against a real domain — all listed under
+"Post-Completion" at the end since they require external systems this repo
+can't simulate.
+
+** Implementation Steps
+
+*** TODO Task 1: Project scaffolding
+
+*Files:*
+- Create: =pyproject.toml=
+- Create: =prep/__init__.py=
+- Create: =.gitignore=
+- Create: =tests/__init__.py=
+
+- [ ] set up =pyproject.toml= with dependencies: Pillow, piexif (sole EXIF library — not exifread; settled to avoid redundant dependencies), Jinja2, ruamel.yaml, bcrypt, click, pytest (dev), and a =[project.scripts] prep = "prep.cli:cli"= entry point
+- [ ] create the =prep/= package skeleton (empty modules listed in the repo layout, each with a one-line docstring) — *except* =prep/cli.py= and =prep/users.py=, which Task 2 creates directly with real content
+- [ ] add =.gitignore= for =site/=, =caddy/Caddyfile=, =__pycache__/=, =.venv/=, etc.
+- [ ] add a minimal config source for deployment-specific values Task 12 needs (site domain, ACME email, pictures-root path) — e.g. a checked-in =prep.example.toml= plus a gitignored =prep.toml= read by =prep/cli.py=
+- [ ] verify =pip install -e .= (or equivalent) and =pytest= both run cleanly with zero tests
+- [ ] run tests — must pass (trivially) before task 2
+
+*** TODO Task 2: users.yml module and user-management CLI (add/passwd, hash-password)
+
+*Files:*
+- Create: =prep/users.py=
+- Create: =prep/cli.py=
+- Create: =tests/test_users.py=
+
+- [ ] implement =load_users(path)= / =save_users(path, data)= in =prep/users.py= using =ruamel.yaml= round-trip mode
+- [ ] implement =hash_password(plaintext) -> str= (bcrypt) and =add_user=/=update_password= helpers that error on duplicate/missing usernames respectively
+- [ ] create =prep/cli.py= as a =click= group with subcommands =hash-password= (prompts for a password, prints the hash) and =users add <username>= / =users passwd <username>= (hidden double-prompt input, call the helpers above)
+- [ ] write tests for =load_users=/=save_users= round-trip (comments/order preserved on a fixture file with a comment)
+- [ ] write tests for =add_user= (success, duplicate-username error) and =update_password= (success, unknown-username error)
+- [ ] run tests — must pass before task 3
+
+*** TODO Task 3: Photo/video metadata extraction
+
+*Files:*
+- Create: =prep/metadata.py=
+- Create: =tests/test_metadata.py=
+- Create: =tests/fixtures/sample_with_exif.jpg=
+- Create: =tests/fixtures/sample_no_exif.jpg=
+- Create: =tests/fixtures/sample.mp4=
+
+- [ ] implement =get_photo_date(path) -> (datetime, is_fallback: bool)= reading EXIF =DateTimeOriginal= via piexif, falling back to file mtime with a logged warning when missing/corrupt
+- [ ] implement =get_video_date(path) -> (datetime, is_fallback: bool)= via =ffprobe= (subprocess) reading creation time, same mtime fallback behavior. =ffprobe='s =creation_time= is UTC while EXIF =DateTimeOriginal= is naive local time — convert the ffprobe value to the local timezone before returning it, so photos and videos from the same day sort together correctly
+- [ ] implement a thin =get_item_date(path)= dispatcher by file extension
+- [ ] write tests for =get_photo_date= against both fixtures (EXIF present vs. absent/fallback path, including the warning being logged)
+- [ ] write tests for =get_video_date= against the sample video (mocking/skipping gracefully if =ffprobe= isn't installed in the test environment, but exercising the fallback path unconditionally), including a test asserting the UTC→local conversion lands on the expected local date/time
+- [ ] run tests — must pass before task 4
+
+*** TODO Task 4: publish.yaml manifest module
+
+*Files:*
+- Create: =prep/manifest.py=
+- Create: =tests/test_manifest.py=
+- Create: =tests/fixtures/sample_album/publish.yaml=
+
+- [ ] define a =Manifest= model (title, public, allowed_users, items) and =load_manifest(album_dir)= using =ruamel.yaml=, defaulting =title= to the folder name when absent
+- [ ] implement validation: hard error if any =allowed_users= entry isn't in a given loaded =users.yml=, hard error if any explicit =items= file entry doesn't exist on disk (hard error also if an =items= entry points inside =work/=, since that content must never be published)
+- [ ] implement auto-population: when =items= is omitted, scan the album directory (excluding =work/=) for files matching a fixed whitelist of photo/video extensions (=.jpg=/=.jpeg= and the handful of video extensions =prep/assets.py= supports — explicitly *not* =.CR2=, =.xmp=, or anything else) and sort them using =prep/metadata.py= dates, building the implicit =items= list
+- [ ] codify the ordering rule used everywhere downstream: when =items= is explicit, that order is authoritative and is *not* re-sorted chronologically — day-grouping (Task 5) buckets items by date purely for the separator, it never reorders them. A =note= entry has no date of its own; it's attached to the day of the item immediately preceding it in =items= (or the following item's day, if the note is first)
+- [ ] implement =discover_albums(pictures_root) -> list[AlbumInfo]= that walks a root directory for every =publish.yaml= and returns path + loaded manifest for each (used later by index rendering and Caddy config generation)
+- [ ] write tests for manifest loading (title default, explicit items, auto-populated items ordering) and both hard-failure validation cases
+- [ ] write tests for =discover_albums= against a small fixture tree with 2-3 album folders
+- [ ] run tests — must pass before task 5
+
+*** TODO Task 5: Day-grouping and irregular grid layout algorithm
+
+*Files:*
+- Create: =prep/layout.py=
+- Create: =tests/test_layout.py=
+
+- [ ] implement =group_by_day(items_with_dates)= producing ordered day buckets. This preserves =items='s own manifest order (Task 4's rule) within each bucket — it never re-sorts by timestamp, it only decides where day-separator boundaries fall; a =note= joins the day of its preceding item
+- [ ] implement =compute_grid_positions(day_buckets, aspect_ratios)= taking each photo/video item's aspect ratio (read from the generated thumbnail, see Task 6) as input, so tile shapes can respect portrait vs. landscape, and assigning each item a deterministic =grid-row=/=grid-column= span (notes get a wider span). The grid's own left-to-right, top-to-bottom flow (=grid-auto-flow: row=, items emitted in their already-authoritative order) *is* the "naturally obvious which came first" cue the requirement asks for — no separate sequence numbering is added
+- [ ] make the "randomized" tile-size variety seeded deterministically from album path + item index, so re-running =prep publish= on an unchanged album produces identical layout
+- [ ] write tests for =group_by_day= (single day, multi-day, notes interspersed, manifest order preserved rather than re-sorted)
+- [ ] write tests for =compute_grid_positions= (deterministic output across repeated calls, day-separator markers placed correctly, notes get a distinct span shape from photos, portrait vs. landscape aspect ratios produce different span shapes)
+- [ ] run tests — must pass before task 6
+
+*** TODO Task 6: Thumbnail and video poster-frame generation
+
+*Files:*
+- Create: =prep/assets.py=
+- Create: =tests/test_assets.py=
+- Create: =tests/fixtures/sample_rotated.jpg=
+- Create: =tests/fixtures/sample_corrupt.jpg=
+
+- [ ] implement =generate_photo_thumbnail(src, dest, max_size)= using Pillow, applying =ImageOps.exif_transpose= before resizing (so portrait photos with an EXIF Orientation tag aren't rotated), writing (atomically — temp file + rename) into =<album>/.web/thumbs/=, and returning the resulting (width, height) for Task 5's aspect-ratio input
+- [ ] implement =generate_video_poster(src, dest)= via =ffmpeg= subprocess (extract a single early frame as a JPEG), written alongside photo thumbnails, also returning its (width, height)
+- [ ] implement =pick_cover_thumbnails(album_items, count=3)= choosing which generated thumbnails represent the album on the index page (e.g. first/middle/last published photo)
+- [ ] implement cleanup: when re-run after =items= shrinks, remove thumbnails/posters under =.web/thumbs/= for items no longer present, so removed items don't leave stale generated files behind in the real album folder forever
+- [ ] raise a clear, caught error (hard-fail per Development Approach, not a warning) when Pillow/ffmpeg can't read a source file at all (corrupt/unreadable image or video), identifying the offending filename
+- [ ] write tests for =generate_photo_thumbnail= against the fixture JPEGs (correct output dimensions, aspect ratio preserved, returned dimensions match) and against a rotated-orientation fixture (=tests/fixtures/sample_rotated.jpg= with an Orientation EXIF tag) asserting the output is right-side-up
+- [ ] write tests for =generate_video_poster= against the fixture video (output file exists and is a valid JPEG), skipping gracefully with a clear skip message if =ffmpeg= isn't available in the test environment
+- [ ] write tests for =pick_cover_thumbnails= selection logic on a small/large item list
+- [ ] write a test for the cleanup behavior (stale thumbnail removed after its item leaves =items=)
+- [ ] write a test asserting a corrupt/truncated fixture image raises the clear error instead of silently producing a broken thumbnail
+- [ ] run tests — must pass before task 7
+
+*** TODO Task 7: Shared CSS/JS scaffolding and base templates
+
+*Files:*
+- Create: =prep/static/base.css=
+- Create: =prep/static/albums-index.css=
+- Create: =prep/static/album-page.css=
+- Create: =prep/static/picture-view.css=
+- Create: =prep/templates/base.html=
+- Create: =prep/render.py=
+- Create: =tests/test_render.py=
+
+- [ ] define the semantic class vocabulary in the per-component CSS files (e.g. =.album-grid=, =.album-tile=, =.day-separator=, =.note-slot=, =.picture-nav-button=, =.logout-button=) — no page may set a literal CSS property via a =style= attribute (only =--custom-property= declarations are ever allowed, per Solution Overview), enforced by convention in every later templating task
+- [ ] write =prep/templates/base.html= (shared =<head>=, CSS links, logout button markup) that other templates extend
+- [ ] implement =sync_shared_static(site_root)= in =prep/render.py= copying =prep/static/= into =site/static/= (same content every time — simple overwrite, not symlinked, since it's small and versioned with the code, not the photo archive)
+- [ ] write a test asserting every =style="..."= attribute that does appear in a shipped template or generated static HTML fixture contains *only* =--custom-property: value;= declarations (matching the narrowed rule in Solution Overview) — fail the test on any literal CSS property (e.g. =color=, =display=, =width=) inside a =style= attribute
+- [ ] write a test for =sync_shared_static= copying into a temp =site/= directory
+- [ ] run tests — must pass before task 8
+
+*** TODO Task 8: Album page HTML generation
+
+*Files:*
+- Modify: =prep/render.py=
+- Create: =prep/templates/album_page.html=
+- Modify: =prep/static/album-page.css=
+- Modify: =tests/test_render.py=
+
+- [ ] write =prep/templates/album_page.html=: grid container referencing =compute_grid_positions= output (grid-row/column placement emitted via the =--custom-property= =style= attributes defined in Task 7, feeding fixed rules in =album-page.css=) with day separators and note slots; thumbnails referenced via relative =.web/thumbs/...= paths and originals referenced by their plain filename, since both live alongside the generated page
+- [ ] implement =render_album_page(album_info, album_dir)= in =prep/render.py= wiring manifest + metadata + layout into the template, writing directly to =<album_dir>/index.html=
+- [ ] include left/right scroll button markup (hidden by default, shown on hover via CSS, enhanced by JS in task 14) and the horizontal =scroll-snap= container class in =album-page.css=
+- [ ] add the narrow-screen media query to =album-page.css= that collapses the whole grid to =grid-template-columns: 1fr= (single-column vertical stack, no horizontal scroll, notes rendered as normal readable paragraphs instead of fitted text)
+- [ ] write tests asserting the rendered album page contains one grid entry per manifest item in its authoritative order and a separator per day boundary
+- [ ] run tests — must pass before task 9
+
+*** TODO Task 9: Picture view HTML generation
+
+*Files:*
+- Modify: =prep/render.py=
+- Create: =prep/templates/picture_view.html=
+- Modify: =tests/test_render.py=
+
+- [ ] write =prep/templates/picture_view.html=: full-size =<img>= or =<video controls>= depending on item type, real =<a href>= prev/next links to adjacent items' pages (first/last item has one side disabled/omitted), back-to-album link
+- [ ] implement =render_picture_pages(album_info, album_dir)= writing one HTML file per item named from its *source filename*, not its position (e.g. =<album_dir>/picture/IMG_0001.html=), so inserting or removing an item elsewhere in the album never renames another item's page/bookmark. Notes have no picture page (they're inline-only on the album page) and are skipped when computing prev/next for their neighbors
+- [ ] implement cleanup: when re-run after =items= shrinks, remove =picture/<name>.html= pages for items no longer present
+- [ ] confirm the album page's (Task 8) links to picture pages resolve to these real generated files
+- [ ] write tests for first-item/last-item edge cases (no prev / no next), a middle item (both links present and pointing at correct adjacent files by filename-derived URL), video vs. photo markup selection, and a regression test that inserting a new item before an existing one leaves the existing item's page filename/URL unchanged
+- [ ] write a test for the cleanup behavior (stale picture page removed after its item leaves =items=)
+- [ ] run tests — must pass before task 10
+
+*** TODO Task 10: Albums-index HTML generation
+
+*Files:*
+- Modify: =prep/render.py=
+- Create: =prep/templates/albums_index.html=
+- Modify: =tests/test_render.py=
+
+- [ ] write =prep/templates/albums_index.html=: years descending → months January-December → album tiles (two per row via CSS grid, collapsing to one per row under a narrow-screen media query defined in =albums-index.css=), each tile showing overlapping cover thumbnails (CSS transforms driven by per-tile deterministic offsets, computed in Python) and the album title. The index page itself, its CSS/JS, and the =.covers/= directory (next bullet) are the only things *not* behind any per-album =basic_auth= block in the generated Caddyfile (Task 12) — this is deliberate, since the index must be reachable by anonymous visitors and is the logout redirect target
+- [ ] implement =render_albums_index(site_root, pictures_root)= using each album's =<album_dir>/.web/album.json= summary (written by =prep publish= in Task 11 — *not* re-deriving dates/covers by re-scanning every album's metadata on every run, and only listing albums that have actually been published at least once, i.e. have an =album.json=, rather than every folder that merely has a =publish.yaml=), grouping by year/month derived from that summary's earliest item date, and writing =<site_root>/index.html=. Each tile's cover images are referenced from =<site_root>/.covers/<album-path>/= (the always-public copy — see Solution Overview's "Index privacy tradeoff"), never from the album's own auth-protected =.web/thumbs/=
+- [ ] write tests for year/month grouping and ordering (newest year first, January-December within a year) against a small multi-album fixture tree, including one album with a =publish.yaml= but no =album.json= (never published) correctly absent from the index
+- [ ] write a test for the deterministic cover-thumbnail scatter offsets (same album → same offsets across repeated runs)
+- [ ] write a test asserting a private album's index tile references =.covers/<album>/...= paths, never =<album>/.web/thumbs/...= paths
+- [ ] run tests — must pass before task 11
+
+*** TODO Task 11: =prep publish= orchestration command
+
+*Files:*
+- Modify: =prep/cli.py=
+- Create: =tests/test_cli_publish.py=
+
+- [ ] implement =prep publish <album-folder>= in =prep/cli.py=, calling in order: manifest load+validate (task 4) and metadata extraction (task 3) — fully, with *no output written yet* — then, only if all hard-validation passes: asset generation (task 6, including copying chosen covers into the public =site/.covers/= directory from Task 10), layout computation (task 5), album/picture page rendering (tasks 8-9), writing this album's =.web/album.json= summary (title, public flag, earliest item date, cover paths — consumed by Task 10), syncing shared static assets via =sync_shared_static= (task 7, idempotent, cheap to repeat every run), full albums-index re-render (task 10), and finally Caddyfile regeneration + reload (task 12)
+- [ ] on any hard-validation failure (including the Task 6 corrupt-image error), abort before writing any output for that album and print a clear error (including which rule failed and the offending username/filename) — nothing is ever partially written into the real album folder
+- [ ] on recoverable issues (EXIF/video date fallback), continue and print a warning summary at the end of the run
+- [ ] write an end-to-end test running =prep publish= against a small fixture album directory (with a =work/= subdir, a stray unlisted JPEG, and a note in =items=) and asserting the expected files appear directly inside the temp album directory (=.web/thumbs/= thumbnails, =index.html=, =picture/*.html=, =.web/album.json=) and in the temp =site/= directory (=.covers/= copies, =static/= assets, site =index.html=), and that the generated pages never link to =work/= contents or the unlisted JPEG (Caddy's own enforcement that they're unreachable is tested separately in Task 12/Task 17)
+- [ ] write a test asserting a manifest referencing an unknown user aborts cleanly with no output written
+- [ ] run tests — must pass before task 12
+
+*** TODO Task 12: Caddyfile generation and graceful reload
+
+*Files:*
+- Create: =prep/caddyconfig.py=
+- Modify: =prep/cli.py=
+- Create: =tests/test_caddyconfig.py=
+
+- [ ] implement =generate_caddyfile(albums, users, domain, acme_email, pictures_root, site_root)= producing *one* site block for =domain= (domain/email read from a small config source — e.g. a =prep.toml=/env var checked in Task 1's scaffolding — not hardcoded), containing: an unauthenticated =handle= for =/=, =/static/*=, and =/.covers/*= rooted at =site_root=; then, per album, a =handle_path= route matching that album's exact path plus a trailing =/*=, with =root= set directly to that album's real absolute directory under =pictures_root=, wrapped in a =route { }= block (so the two directives below run in the exact written order, not Caddy's default directive ordering) containing a =@excluded { path /work/* /publish.yaml }= matcher plus =respond @excluded 404= *before* =file_server= (the trailing =/*= on =/work/*= covers nested directories per Caddy's own docs, so no per-file enumeration is ever needed; a =path= matcher is case-insensitive, deliberately not =file_server='s =hide= subdirective — see Solution Overview), wrapped in a =basic_auth= directive listing exactly the =username bcrypt_hash= pairs from =allowed_users ∩ users.yml= for private albums, and with no =basic_auth= wrapper at all for public albums. Use the precise exact-path-plus-=/*= prefix so =/2024/Trip*= never also matches an unrelated =/2024/Trip2=. Album path segments are percent-encoded/escaped as needed for spaces or unicode in folder names
+- [ ] implement =write_caddyfile(path, content)= (writing into the =caddy/= directory established in Task 17, not as a lone bind-mounted file) plus =reload_caddy()= that runs =docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile= (not a bare host-side =caddy reload=, since Caddy only runs inside the container), tolerating "container not running" gracefully in local/dev contexts with a clear message instead of a crash. Validate the generated file with =caddy validate= (via the same =docker compose exec=) before reloading, surfacing validation errors instead of reloading a broken config
+- [ ] pin the Caddy image to a specific tag (not =:latest=) in Task 17's compose file and reference that same version here, since generated =basic_auth= hash syntax acceptance has varied across Caddy versions
+- [ ] add =prep sync-routes= CLI command: discover all albums (task 4's =discover_albums=, filtered to Task 10's "has been published at least once" set), regenerate and write the Caddyfile, validate, trigger reload — without touching images/HTML
+- [ ] wire =prep publish= (task 11) and =prep users add=/=prep users passwd= (task 2) to all call this same regeneration path as their final step, covering *all* known albums each time (not just the one just published/changed) — passwd changes must invalidate the old password immediately, the same as a delete does
+- [ ] write tests for =generate_caddyfile= (public album has no =basic_auth=, private album's block contains exactly its allowed users' hashes and no others, every album route includes the =work=/=publish.yaml= exclusion matcher wrapped in =route { }= and ordered before =file_server=, a path-prefix-collision pair like =Trip= vs. =Trip2= produces non-overlapping matchers, index/static/covers remain unauthenticated, unknown-to-users.yml username already prevented upstream by manifest validation)
+- [ ] write a test for =sync-routes= against a fixture tree producing the expected Caddyfile content, with =reload_caddy= mocked/stubbed
+- [ ] run tests — must pass before task 13
+
+*** TODO Task 13: =prep users delete= with manifest cleanup and immediate revocation
+
+*Files:*
+- Modify: =prep/cli.py=
+- Modify: =prep/manifest.py=
+- Modify: =tests/test_users.py=
+
+- [ ] implement =remove_user_from_manifests(username, pictures_root)= in =prep/manifest.py=: walk every album's =publish.yaml=, strip the username from =allowed_users= where present, save via =ruamel.yaml=, return the list of touched album paths
+- [ ] implement =prep users delete <username>= in =prep/cli.py=: remove from =users.yml=, call =remove_user_from_manifests=, print which albums were touched, then automatically run the same Caddyfile-regeneration+reload path as =sync-routes= (task 12) so access is revoked immediately
+- [ ] error clearly if the username doesn't exist in =users.yml=
+- [ ] write tests for =remove_user_from_manifests= (removed from albums that listed it, untouched albums unaffected, comments/formatting preserved)
+- [ ] write a test for =prep users delete= end-to-end against a fixture tree, asserting =users.yml=, the touched manifests, and the regenerated Caddyfile all reflect the removal
+- [ ] run tests — must pass before task 14
+
+*** TODO Task 14: Album page JS (scroll buttons, swipe, note sizing)
+
+*Files:*
+- Create: =prep/static/album-page.js=
+- Modify: =prep/templates/album_page.html=
+
+- [ ] implement hover-activated left/right scroll buttons that call =scrollBy()= on the grid's =scroll-snap= container, shown/hidden purely via the =.album-grid= container's own CSS (JS only toggles a class, never sets inline styles)
+- [ ] rely on native =scroll-snap= + =overflow-x: auto= for drag/swipe (already in the CSS from task 8); JS adds no custom swipe handling here since native behavior covers it
+- [ ] implement the note-text shrink-to-fit pass in JS from the start (not contingent on checking =clamp()= first — =clamp()= scales with the viewport, not with a note's specific grid cell, so it can't satisfy "as large as possible but fitting within the slot" on its own): on load, measure each =.note-slot='s box and binary-search/iterate a =--note-font-size= custom property (set via =element.style.setProperty=, consistent with the Task 7 "custom-properties-only" =style= rule) until the text fits
+- [ ] wire the script tag into =album_page.html= (deferred/async load, no blocking)
+- [ ] manual verification only for this task (no meaningful unit-testable logic beyond what task 8's tests already cover) — note this explicitly rather than writing a hollow test
+
+*** TODO Task 15: Picture view JS (keyboard/swipe nav) and logout
+
+*Files:*
+- Create: =prep/static/picture-view.js=
+- Create: =prep/static/logout.js=
+- Modify: =prep/templates/picture_view.html=
+- Modify: =prep/templates/base.html=
+
+- [ ] implement swipe-left/right and left/right-arrow-key handling in =picture-view.js= that navigate by following the page's own real prev/next =<a href>= links (so behavior stays consistent with the no-JS fallback) rather than duplicating link-resolution logic. On a *photo* page, Space also navigates next (satisfying the requirement's explicit Space-as-next shortcut). On a *video* page, Space is left to the native =<video>= element's own play/pause behavior instead (conflicts otherwise), and swipe gestures are only attached outside the native controls area so they don't fight with scrubbing — left/right buttons and arrow keys remain the reliable way to move to an adjacent item from a video page
+- [ ] implement the hover-activated left/right button enhancement for picture view, same pattern as task 14
+- [ ] implement =logout.js=: on the logout button's click, fire an =XMLHttpRequest= to the *current page's own URL* (whichever album's protected realm it's in, or a no-op if the current page is already public) with deliberately invalid credentials to force the browser to discard cached Basic Auth credentials for that realm, then redirect to the public albums index. The logout button itself appears on every page via the shared =base.html=, including public ones (where it's effectively inert)
+- [ ] wire script tags into =picture_view.html= and the logout button markup into =base.html= (used by all pages via task 7's shared base template)
+- [ ] manual verification only for this task (browser-interaction logic); note explicitly rather than writing a hollow unit test — call out in Post-Completion that logout's cross-browser behavior needs a real check
+
+*** TODO Task 16: Containerize the =prep= CLI
+
+*Files:*
+- Create: =prep/Dockerfile=
+
+- [ ] write =prep/Dockerfile=: a =python:3.12-slim= base, =apt-get install= =ffmpeg=, copy the project in, =pip install -e .=, entrypoint =prep= — so Pillow/piexif/ffmpeg/bcrypt/etc. are installed only inside this image, never on the host
+- [ ] decide and document the build strategy: built locally via =docker compose build prep= as part of this project's own compose file (Task 17), not published to any registry, since this is a personal tool
+- [ ] verify the image builds and =docker compose run --rm prep --help= works end to end, exercising Pillow/piexif/ffmpeg entirely inside the container with zero host installation
+- [ ] verify =docker compose run --rm prep pytest= runs the full test suite inside the container, for a workflow that needs no host Python environment at all
+- [ ] no pytest-level tests apply to the Dockerfile itself — covered by the manual build+run verification above, same treatment as Task 17's compose checks
+
+*** TODO Task 17: docker-compose and Caddy container
+
+*Files:*
+- Create: =docker-compose.yml=
+- Create: =Caddyfile.example= (checked-in reference; the real =Caddyfile= is generated/gitignored)
+
+- [ ] write =docker-compose.yml= with two services: =caddy= (pinned image tag, matching Task 12's assumption, not =:latest=) with volumes for a read-only bind mount of =~/Pictures= (any convenient container path, e.g. =/pictures= — no longer needs to match the host's absolute path, since there are no symlinks to resolve), a read-only bind mount of =./site= (e.g. at =/site=), the =./caddy= directory (not the bare =Caddyfile=, so atomic rewrites/renames by =prep= don't leave the container holding a stale inode) mounted at =/etc/caddy=, and a named volume for Let's Encrypt certificate/state persistence, with ports 80/443 published; and =prep= (built from =prep/Dockerfile=, *not* started by =docker compose up* — invoked only via =docker compose run --rm prep <args>=) with a read-write bind mount of =~/Pictures= at the *same container path* Caddy uses (so generated Caddyfile =root= paths are consistent to reason about, even though exact host/container path matching is no longer a correctness requirement), a read-write bind mount of =./site=, a read-write bind mount of =./caddy=, and a bind mount of the project repo itself for =users.yml=/=prep.toml=
+- [ ] write =Caddyfile.example= showing the single-site-block shape =prep sync-routes= generates: the unauthenticated =/=, =/static/*=, =/.covers/*= handles rooted at =/site=, and one public + one private example album route, each with =root /pictures/<album-path>= and a =route { }=-wrapped =@excluded { path /work/* /publish.yaml }= + =respond @excluded 404= block ahead of =file_server=, the private one additionally wrapped in =basic_auth=
+- [ ] verify =docker compose config= validates the compose file without errors
+- [ ] verify locally (using =tls internal= in a throwaway local Caddyfile variant, or =auto_https off= plus plain HTTP — *not* a real =ssl.type=/ACME flag, which doesn't apply to Caddy) that =docker compose up= serves a hand-placed sample album directly from the mounted =~/Pictures= path, that a request for a file under =work/= (including a nested subdirectory, and a mismatched-case variant like =Work/= or =WORK/=) or for =publish.yaml= 404s, and that the generated =index.html= and =picture/*.html= and real photo files succeed — deferring real ACME issuance against a real domain to Post-Completion
+- [ ] verify =docker compose run --rm prep publish <fixture-album>= (against a bind-mounted temp fixture pictures root for this check, not real =~/Pictures=) writes the expected generated files, and that Caddy serves them correctly after the automatic reload
+- [ ] no automated test framework applies to compose/container config — covered by the manual checks above
+
+*** TODO Task 18: README — tunnel, WireGuard, DigitalOcean host, operator workflow
+
+*Files:*
+- Create: =README.md=
+
+- [ ] document the day-to-day curator workflow: edit =publish.yaml= in an album folder, run =docker compose run --rm prep publish <album>=, changes go live with no restart needed
+- [ ] document user management: =docker compose run --rm prep hash-password=, =prep users add/passwd/delete=, and that =prep users delete= revokes access immediately
+- [ ] document setting up the =socat= tunnel from this machine to the DigitalOcean host
+- [ ] document setting up WireGuard between this machine and the DO host
+- [ ] document Caddy's ACME/domain configuration needs: port 80/443 reachability through the tunnel for HTTP-01, and the DNS-01 alternative if that's undesirable
+- [ ] document the =work/= subdirectory convention and Caddy's =path= matcher + =respond 404= block on =work/=/=publish.yaml=: anything not ready to publish must live under =work/=, since (per the accepted "Why serve =~/Pictures= directly" tradeoff in Solution Overview) a loose, un-curated file elsewhere in an album folder is technically fetchable by direct URL even though it's linked from nowhere
+- [ ] document host prerequisites — Docker/Compose only; Python, Pillow, and ffmpeg are never installed on the host, since all =prep= usage goes through =docker compose run --rm prep ...= (Task 16) — and the exact local setup sequence: =docker compose build prep=, create =users.yml= via =docker compose run --rm prep users add=, write a =prep.toml=, run =prep publish= on a first album, =docker compose up=
+- [ ] document the "remote admin via Claude Code" pattern: how to start a Claude Code session in this project directory with Remote Control enabled, and what kinds of adjustments are safe/expected to delegate to it remotely (user management, manifest edits, re-running =prep publish=/=sync-routes=) versus what still needs hands-on access (real file placement under =~/Pictures=, physical tunnel/WireGuard troubleshooting)
+
+*** TODO Task 19: Verify acceptance criteria
+
+- [ ] re-read =initial-prompt.org= and confirm every requirement maps to an implemented piece: albums index layout/behavior, album page grid/notes/day-separators/responsive collapse, picture view navigation/video/bookmarkable URLs, public vs. password-protected albums, Darktable/CR2 coexistence via =work/=, docker-compose simplicity, tunnel/VPN documentation
+- [ ] explicitly confirm the one accepted deviation from the original requirements: the request's "ideally an admin interface" is deliberately *not* built as a web UI — it's replaced by the =prep users=/=prep sync-routes= CLI plus occasional Claude Code Remote Control sessions (see Solution Overview and Task 18). This is a conscious tradeoff, not a gap, but it should be named as such rather than silently assumed covered
+- [ ] run the full test suite: =pytest= (or =docker compose run --rm prep pytest=)
+- [ ] run a full manual pass per Post-Completion below
+- [ ] fix any gaps found before considering the plan complete
+
+*** TODO Task 20: Finalize documentation and move plan
+
+*Files:*
+- Modify: =README.md=
+
+- [ ] update =README.md= with anything learned/changed during implementation that isn't reflected yet
+- [ ] create =docs/plans/completed/= if it doesn't exist and move this plan file there
+- [ ] final =pytest= run — must pass
+
+** Post-Completion
+/Items requiring manual intervention or external systems — no checkboxes, informational only./
+
+*Manual verification:*
+- Open the generated site in an actual desktop browser, a phone browser, and
+  ideally a smart-TV browser, checking the responsive reflow (two tiles/row
+  → one/row), grid scroll behavior, and picture-view swipe/keyboard/Space
+  navigation.
+- Check note-slot text sizing (CSS =clamp()= alone vs. needing the task 14
+  JS fallback) on a real note of realistic length.
+- Verify the Basic Auth logout button's behavior across the browsers the
+  user actually uses — the invalid-credentials trick isn't 100% consistent
+  across all browsers/versions.
+- Confirm a real video file plays correctly via the native =<video>= element
+  across target devices, and that the poster-frame looks reasonable.
+
+*External system setup:*
+- Real WireGuard tunnel setup between this machine and the DigitalOcean
+  host, per the README.
+- Real =socat= tunnel configuration on both ends.
+- Pointing a real domain's DNS at the DigitalOcean host and letting Caddy
+  perform actual Let's Encrypt issuance (HTTP-01 or DNS-01 depending on the
+  README's guidance) — can't be exercised in this repo/sandbox.
+- First real run of =prep publish= against actual =~/Pictures= album
+  folders, including writing the first real =publish.yaml= files there and
+  the first real =work/= subdirectories to hold CR2s/Darktable files.
