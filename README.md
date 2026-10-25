@@ -490,3 +490,9 @@ pyproject.toml
 Per-album content (`publish.yaml`, generated `index.html`, `picture/*.html`,
 `.web/thumbs/`, `work/`) lives inside each album's own folder under
 `~/Pictures`, outside this repo entirely.
+
+## License
+
+Licensed under the GNU General Public License v3.0 — see `LICENSE`. See
+`CONTRIBUTING.md` for the contribution/rights-assignment terms that apply
+to anything submitted to this repository.
