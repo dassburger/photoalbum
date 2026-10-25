@@ -9,6 +9,9 @@ caddy/Caddyfile
 # Deployment-specific config (domain, ACME email, pictures-root path).
 prep.toml
 
+# bcrypt password hashes -- created by `prep users add`/`passwd`.
+users.yml
+
 # Python
 __pycache__/
 *.py[cod]

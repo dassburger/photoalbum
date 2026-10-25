@@ -138,6 +138,43 @@ def test_publish_end_to_end(tmp_path, monkeypatch):
     assert "Test Album" in site_index_html
 
 
+def test_publish_logs_every_real_file_it_writes(tmp_path, monkeypatch):
+    """`prep publish` must log the real, final path of every file it
+    creates/changes -- see CLAUDE.md's logging convention. In particular,
+    thumbnails and covers are generated into a transient staging directory
+    and swapped into place as a whole (see `_generate_assets_atomically`),
+    so this also guards against the swap's own files only ever being
+    logged under their throwaway staging path instead of their real one.
+    """
+    pictures_root = tmp_path / "pictures"
+    pictures_root.mkdir()
+    album_dir = _build_album(pictures_root)
+
+    site_root = tmp_path / "site"
+    users_path = tmp_path / "users.yml"
+
+    result = _invoke_publish(monkeypatch, album_dir, pictures_root, site_root, users_path)
+    assert result.exit_code == 0, result.output
+
+    thumbs_dir = album_dir / ".web" / "thumbs"
+    expected_paths = [
+        thumbs_dir / "IMG_0001.jpg.jpg",
+        thumbs_dir / "IMG_0002.jpg.jpg",
+        album_dir / "index.html",
+        album_dir / "picture" / "IMG_0001.html",
+        album_dir / "picture" / "IMG_0002.html",
+        album_dir / ".web" / "album.json",
+        site_root / "index.html",
+    ]
+    for path in expected_paths:
+        assert f"wrote {path}" in result.output, (path, result.output)
+
+    # No transient staging-directory path (the swap's intermediate
+    # location, never the file's real final home) should ever be logged.
+    assert "staging" not in result.output
+    assert "synced shared static assets to " in result.output
+
+
 def test_publish_unknown_user_aborts_cleanly(tmp_path, monkeypatch):
     pictures_root = tmp_path / "pictures"
     pictures_root.mkdir()

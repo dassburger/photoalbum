@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
@@ -10,6 +11,8 @@ from ruamel.yaml import YAML
 
 from prep.atomic import atomic_write
 from prep.metadata import PHOTO_EXTENSIONS, VIDEO_EXTENSIONS, get_item_date
+
+logger = logging.getLogger(__name__)
 
 MANIFEST_FILENAME = "publish.yaml"
 WORK_DIRNAME = "work"
@@ -258,6 +261,7 @@ def remove_user_from_manifests(username: str, pictures_root: str | Path) -> list
                 _yaml.dump(data, f)
 
         atomic_write(manifest_path, _save)
+        logger.info("wrote %s (removed %r from allowed_users)", manifest_path, username)
         touched.append(manifest_path.parent)
 
     return touched

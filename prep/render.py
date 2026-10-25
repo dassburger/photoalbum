@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import calendar
 import json
+import logging
 import mimetypes
 import random
 import shutil
@@ -23,6 +24,8 @@ from prep.atomic import atomic_write_text
 from prep.layout import compute_grid_positions, group_by_day
 from prep.manifest import AlbumInfo, ManifestItem, discover_albums
 from prep.metadata import get_item_date, is_video
+
+logger = logging.getLogger(__name__)
 
 
 class RenderError(Exception):
@@ -156,6 +159,7 @@ def write_album_summary(album_dir: str | Path, summary: AlbumSummary) -> Path:
     dest = Path(album_dir) / ALBUM_SUMMARY_FILENAME
     content = json.dumps(summary.to_dict(), indent=2, sort_keys=True)
     atomic_write_text(dest, content)
+    logger.info("wrote %s", dest)
     return dest
 
 
@@ -292,6 +296,7 @@ def render_album_page(album_info: AlbumInfo, album_dir: str | Path) -> Path:
 
     dest = album_dir / "index.html"
     atomic_write_text(dest, html)
+    logger.info("wrote %s", dest)
     return dest
 
 
@@ -344,12 +349,14 @@ def render_picture_pages(album_info: AlbumInfo, album_dir: str | Path) -> list[P
 
         dest = picture_dir / filename
         atomic_write_text(dest, html)
+        logger.info("wrote %s", dest)
         written.append(dest)
 
     if picture_dir.exists():
         for existing in picture_dir.iterdir():
             if existing.is_file() and existing.name not in expected_filenames:
                 existing.unlink()
+                logger.info("removed stale %s", existing)
 
     return written
 
@@ -540,6 +547,7 @@ def sync_shared_static(site_root: str | Path) -> Path:
         # equivalent content and is safe to discard.
         for stale_backup in pending_backups:
             shutil.rmtree(stale_backup, ignore_errors=True)
+        logger.info("synced shared static assets to %s", dest)
         return dest
 
     # Genuine failure: every attempt failed and dest never became valid
@@ -559,6 +567,14 @@ def sync_shared_static(site_root: str | Path) -> Path:
     for stale_backup in pending_backups:
         shutil.rmtree(stale_backup, ignore_errors=True)
 
+    if restored:
+        logger.warning(
+            "sync_shared_static: all %d swap attempts failed for %s; "
+            "restored the previous static/ from backup so the site isn't "
+            "left without one",
+            STATIC_SWAP_MAX_ATTEMPTS,
+            dest,
+        )
     detail = (
         "the previous static/ has been restored so the site isn't left "
         "without one"
@@ -668,4 +684,5 @@ def render_albums_index(site_root: str | Path, pictures_root: str | Path) -> Pat
 
     dest = site_root / "index.html"
     atomic_write_text(dest, html)
+    logger.info("wrote %s", dest)
     return dest

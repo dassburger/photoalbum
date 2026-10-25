@@ -10,6 +10,7 @@ call in `atomic_write` would have gone undetected.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -108,3 +109,13 @@ def test_atomic_write_text_overwrites_existing_file_atomically(tmp_path):
     assert dest.read_text() == "second\n"
     leftovers = [p for p in tmp_path.iterdir() if p.name != "out.txt"]
     assert leftovers == []
+
+
+def test_atomic_write_logs_dest_path_at_debug(tmp_path, caplog):
+    """A future edit that silently dropped this trace (the one place every
+    `prep`-managed file write is guaranteed to pass through) should be
+    caught by a test, not discovered by eyeballing log output."""
+    dest = tmp_path / "out.txt"
+    with caplog.at_level(logging.DEBUG, logger="prep.atomic"):
+        atomic_write_text(dest, "hello\n")
+    assert str(dest) in caplog.text

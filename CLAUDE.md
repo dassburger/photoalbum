@@ -54,6 +54,38 @@ explicitly; don't rely on the `0o644` default.
 or the generated `Caddyfile`, use `prep/atomic.py`, not a new copy of the
 pattern.**
 
+## Logging what `prep` creates/changes
+
+Every real filesystem mutation `prep` makes — a new or rewritten
+publish.yaml/users.yml/Caddyfile/HTML page/`album.json`/thumbnail/poster/
+cover image, or a stale generated file it removes — is logged at `INFO`
+with `logger.info("wrote %s", dest)` or `logger.info("removed stale %s",
+path)`, naming the file's real, final path. `prep/cli.py`'s `cli()` group
+callback calls `logging.basicConfig(level=logging.INFO, format="%(message)s",
+force=True)`, so these show up by default on every invocation (the
+`force=True` matters: it re-attaches a handler bound to the *current*
+stderr, since a stale one left over from an earlier call in the same
+process — e.g. `CliRunner` invoking `cli` repeatedly across tests — would
+otherwise keep writing to a detached stream).
+
+`prep/atomic.py`'s `atomic_write`/`atomic_write_text` also log at `DEBUG`
+(not `INFO`) after every successful write, as a low-level, always-correct
+trace. It's `DEBUG` rather than `INFO` specifically because a caller that
+builds a batch of files in a temporary staging directory and only swaps
+the whole directory into its real location afterward (`prep/cli.py`'s
+`_generate_assets_atomically` for thumbnails/posters, via its per-item
+`generate_photo_thumbnail`/`generate_video_poster` calls) would otherwise
+have every file logged under its throwaway staging path, which no longer
+exists once the swap completes — not the real, final path a human reading
+the log cares about. Any such staging-then-swap writer must emit its own
+explicit `INFO`-level log (naming the real post-swap path) once the swap
+succeeds, instead of relying on `atomic_write`'s generic log; see
+`_generate_assets_atomically`'s post-swap loop and `sync_shared_static`'s
+success path for the pattern to follow.
+
+`prep/users.py`'s `save_users` logs only the path, never the bcrypt
+hash/plaintext — don't log credential-bearing content, even at `DEBUG`.
+
 ## Deterministic seeding for layout/scatter offsets
 
 Anything that needs a reproducible-but-looks-random visual offset (irregular

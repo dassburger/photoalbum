@@ -20,10 +20,13 @@ who needs to read/manage the generated tree is not root.
 
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 from pathlib import Path
 from typing import Callable
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_MODE = 0o644
 
@@ -51,6 +54,15 @@ def atomic_write(
         write_fn(tmp_path)
         os.chmod(tmp_path, mode)
         os.replace(tmp_path, dest)
+        # DEBUG, not INFO: this is the low-level temp-file-plus-rename
+        # primitive, called for every write (including ones into a
+        # transient staging directory later swapped into its real final
+        # location, e.g. prep/cli.py's thumbnail generation) -- `dest`
+        # here isn't always the file's eventual user-meaningful path.
+        # Callers that write directly to a real final destination (most
+        # of them) log their own INFO-level message naming that path;
+        # this is just always-correct low-level plumbing for troubleshooting.
+        logger.debug("atomic_write: wrote %s", dest)
     except Exception:
         tmp_path.unlink(missing_ok=True)
         raise

@@ -17,12 +17,15 @@ Task 17).
 
 from __future__ import annotations
 
+import logging
 import subprocess
 from pathlib import Path
 from typing import Mapping, Sequence
 
 from prep.atomic import atomic_write_text
 from prep.manifest import AlbumInfo, WORK_DIRNAME
+
+logger = logging.getLogger(__name__)
 
 # Caddyfile written into this directory (mounted at /etc/caddy in the caddy
 # container per Task 17 — a directory, not a single bind-mounted file, so
@@ -199,6 +202,7 @@ def write_caddyfile(path: str | Path, content: str) -> Path:
     container — see CADDYFILE_FILENAME) never holds a half-written file."""
     path = Path(path)
     atomic_write_text(path, content)
+    logger.info("wrote %s", path)
     return path
 
 

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import bcrypt
 from ruamel.yaml import YAML
 
 from prep.atomic import atomic_write
+
+logger = logging.getLogger(__name__)
 
 _yaml = YAML()
 _yaml.preserve_quotes = True
@@ -54,6 +57,9 @@ def save_users(path: str | Path, data) -> None:
             _yaml.dump(data, f)
 
     atomic_write(path, _save, mode=0o600)
+    # Path only -- never the hash/plaintext content, which this function
+    # never even receives in plaintext form.
+    logger.info("wrote %s", path)
 
 
 def hash_password(plaintext: str) -> str:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import logging
 import os
 import shutil
 import tempfile
@@ -63,6 +64,8 @@ from prep.users import (
     update_password,
 )
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_USERS_PATH = Path("users.yml")
 DEFAULT_SITE_ROOT = Path("site")
 DEFAULT_CADDY_DIR = Path("caddy")
@@ -86,6 +89,15 @@ class PublishError(Exception):
 @click.group()
 def cli():
     """prep: publish curated photo albums as a static site."""
+    # Every atomic_write()'d file/removed stale file logs an INFO message
+    # naming its real path (see CLAUDE.md's "logging what prep touches").
+    # force=True re-attaches a fresh handler bound to the *current*
+    # sys.stderr on every invocation -- without it, a stale handler left
+    # over from an earlier logging.basicConfig() call in the same process
+    # (e.g. click.testing.CliRunner invoking `cli` repeatedly across
+    # tests, each with its own redirected stderr) would keep writing to a
+    # closed/detached stream instead of the current one.
+    logging.basicConfig(level=logging.INFO, format="%(message)s", force=True)
 
 
 @cli.command("hash-password")
@@ -434,6 +446,12 @@ def _heal_orphaned_swap_dirs(web_dir: Path, final_dir: Path) -> None:
         survivor = max(orphaned_backups, key=lambda p: p.stat().st_mtime)
         survivor.rename(final_dir)
         orphaned_backups.remove(survivor)
+        logger.warning(
+            "self-healed: restored orphaned backup %s into %s after an "
+            "apparent crash during a previous `prep publish` run",
+            survivor,
+            final_dir,
+        )
 
     for stale in orphaned_backups:
         shutil.rmtree(stale, ignore_errors=True)
@@ -550,6 +568,13 @@ def _generate_assets_atomically(
         if backup_dir_safe_to_remove:
             shutil.rmtree(backup_dir, ignore_errors=True)
 
+    # The swap above renamed the whole staging dir into final_dir's place
+    # as one unit, so no individual atomic_write() call ever logged these
+    # paths under their real, final location (see prep/atomic.py) --
+    # log each one explicitly now that it's actually live.
+    for item in media_items:
+        logger.info("wrote %s", final_dir / thumbnail_filename(item.file))
+
     cleanup_stale_thumbnails(album_dir, [item.file for item in media_items])
 
 
@@ -568,13 +593,16 @@ def _copy_covers(
     filenames: list[str] = []
     for item in cover_items:
         filename = thumbnail_filename(item.file)
-        shutil.copy2(thumbnail_path(album_dir, item.file), dest_dir / filename)
+        dest = dest_dir / filename
+        shutil.copy2(thumbnail_path(album_dir, item.file), dest)
+        logger.info("wrote %s", dest)
         filenames.append(filename)
 
     keep = set(filenames)
     for existing in dest_dir.iterdir():
         if existing.is_file() and existing.name not in keep:
             existing.unlink()
+            logger.info("removed stale %s", existing)
     return filenames
 
 
