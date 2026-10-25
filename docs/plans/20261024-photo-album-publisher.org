@@ -379,18 +379,18 @@ can't simulate.
 - [X] write tests for =discover_albums= against a small fixture tree with 2-3 album folders
 - [X] run tests — must pass before task 5
 
-*** TODO Task 5: Day-grouping and irregular grid layout algorithm
+*** DONE Task 5: Day-grouping and irregular grid layout algorithm
 
 *Files:*
 - Create: =prep/layout.py=
 - Create: =tests/test_layout.py=
 
-- [ ] implement =group_by_day(items_with_dates)= producing ordered day buckets. This preserves =items='s own manifest order (Task 4's rule) within each bucket — it never re-sorts by timestamp, it only decides where day-separator boundaries fall; a =note= joins the day of its preceding item
-- [ ] implement =compute_grid_positions(day_buckets, aspect_ratios)= taking each photo/video item's aspect ratio (read from the generated thumbnail, see Task 6) as input, so tile shapes can respect portrait vs. landscape, and assigning each item a deterministic =grid-row=/=grid-column= span (notes get a wider span). The grid's own left-to-right, top-to-bottom flow (=grid-auto-flow: row=, items emitted in their already-authoritative order) *is* the "naturally obvious which came first" cue the requirement asks for — no separate sequence numbering is added
-- [ ] make the "randomized" tile-size variety seeded deterministically from album path + item index, so re-running =prep publish= on an unchanged album produces identical layout
-- [ ] write tests for =group_by_day= (single day, multi-day, notes interspersed, manifest order preserved rather than re-sorted)
-- [ ] write tests for =compute_grid_positions= (deterministic output across repeated calls, day-separator markers placed correctly, notes get a distinct span shape from photos, portrait vs. landscape aspect ratios produce different span shapes)
-- [ ] run tests — must pass before task 6
+- [X] implement =group_by_day(items_with_dates)= producing ordered day buckets. This preserves =items='s own manifest order (Task 4's rule) within each bucket — it never re-sorts by timestamp, it only decides where day-separator boundaries fall; a =note= joins the day of its preceding item
+- [X] implement =compute_grid_positions(day_buckets, aspect_ratios)= taking each photo/video item's aspect ratio (read from the generated thumbnail, see Task 6) as input, so tile shapes can respect portrait vs. landscape, and assigning each item a deterministic =grid-row=/=grid-column= span (notes get a wider span). The grid's own left-to-right, top-to-bottom flow (=grid-auto-flow: row=, items emitted in their already-authoritative order) *is* the "naturally obvious which came first" cue the requirement asks for — no separate sequence numbering is added
+- [X] make the "randomized" tile-size variety seeded deterministically from album path + item index, so re-running =prep publish= on an unchanged album produces identical layout
+- [X] write tests for =group_by_day= (single day, multi-day, notes interspersed, manifest order preserved rather than re-sorted)
+- [X] write tests for =compute_grid_positions= (deterministic output across repeated calls, day-separator markers placed correctly, notes get a distinct span shape from photos, portrait vs. landscape aspect ratios produce different span shapes)
+- [X] run tests — must pass before task 6
 
 *** TODO Task 6: Thumbnail and video poster-frame generation
 
