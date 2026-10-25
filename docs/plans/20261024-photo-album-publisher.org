@@ -332,19 +332,19 @@ can't simulate.
 - [X] verify =pip install -e .= (or equivalent) and =pytest= both run cleanly with zero tests
 - [X] run tests — must pass (trivially) before task 2
 
-*** TODO Task 2: users.yml module and user-management CLI (add/passwd, hash-password)
+*** DONE Task 2: users.yml module and user-management CLI (add/passwd, hash-password)
 
 *Files:*
 - Create: =prep/users.py=
 - Create: =prep/cli.py=
 - Create: =tests/test_users.py=
 
-- [ ] implement =load_users(path)= / =save_users(path, data)= in =prep/users.py= using =ruamel.yaml= round-trip mode
-- [ ] implement =hash_password(plaintext) -> str= (bcrypt) and =add_user=/=update_password= helpers that error on duplicate/missing usernames respectively
-- [ ] create =prep/cli.py= as a =click= group with subcommands =hash-password= (prompts for a password, prints the hash) and =users add <username>= / =users passwd <username>= (hidden double-prompt input, call the helpers above)
-- [ ] write tests for =load_users=/=save_users= round-trip (comments/order preserved on a fixture file with a comment)
-- [ ] write tests for =add_user= (success, duplicate-username error) and =update_password= (success, unknown-username error)
-- [ ] run tests — must pass before task 3
+- [X] implement =load_users(path)= / =save_users(path, data)= in =prep/users.py= using =ruamel.yaml= round-trip mode
+- [X] implement =hash_password(plaintext) -> str= (bcrypt) and =add_user=/=update_password= helpers that error on duplicate/missing usernames respectively
+- [X] create =prep/cli.py= as a =click= group with subcommands =hash-password= (prompts for a password, prints the hash) and =users add <username>= / =users passwd <username>= (hidden double-prompt input, call the helpers above)
+- [X] write tests for =load_users=/=save_users= round-trip (comments/order preserved on a fixture file with a comment)
+- [X] write tests for =add_user= (success, duplicate-username error) and =update_password= (success, unknown-username error)
+- [X] run tests — must pass before task 3
 
 *** TODO Task 3: Photo/video metadata extraction
 
