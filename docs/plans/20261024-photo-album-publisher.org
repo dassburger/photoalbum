@@ -346,7 +346,7 @@ can't simulate.
 - [X] write tests for =add_user= (success, duplicate-username error) and =update_password= (success, unknown-username error)
 - [X] run tests — must pass before task 3
 
-*** TODO Task 3: Photo/video metadata extraction
+*** DONE Task 3: Photo/video metadata extraction
 
 *Files:*
 - Create: =prep/metadata.py=
@@ -355,12 +355,13 @@ can't simulate.
 - Create: =tests/fixtures/sample_no_exif.jpg=
 - Create: =tests/fixtures/sample.mp4=
 
-- [ ] implement =get_photo_date(path) -> (datetime, is_fallback: bool)= reading EXIF =DateTimeOriginal= via piexif, falling back to file mtime with a logged warning when missing/corrupt
-- [ ] implement =get_video_date(path) -> (datetime, is_fallback: bool)= via =ffprobe= (subprocess) reading creation time, same mtime fallback behavior. =ffprobe='s =creation_time= is UTC while EXIF =DateTimeOriginal= is naive local time — convert the ffprobe value to the local timezone before returning it, so photos and videos from the same day sort together correctly
-- [ ] implement a thin =get_item_date(path)= dispatcher by file extension
-- [ ] write tests for =get_photo_date= against both fixtures (EXIF present vs. absent/fallback path, including the warning being logged)
-- [ ] write tests for =get_video_date= against the sample video (mocking/skipping gracefully if =ffprobe= isn't installed in the test environment, but exercising the fallback path unconditionally), including a test asserting the UTC→local conversion lands on the expected local date/time
-- [ ] run tests — must pass before task 4
+- [X] implement =get_photo_date(path) -> (datetime, is_fallback: bool)= reading EXIF =DateTimeOriginal= via piexif, falling back to file mtime with a logged warning when missing/corrupt
+- [X] implement =get_video_date(path) -> (datetime, is_fallback: bool)= via =ffprobe= (subprocess) reading creation time, same mtime fallback behavior. =ffprobe='s =creation_time= is UTC while EXIF =DateTimeOriginal= is naive local time — convert the ffprobe value to the local timezone before returning it, so photos and videos from the same day sort together correctly
+- [X] implement a thin =get_item_date(path)= dispatcher by file extension
+- [X] write tests for =get_photo_date= against both fixtures (EXIF present vs. absent/fallback path, including the warning being logged)
+- [X] write tests for =get_video_date= against the sample video (mocking/skipping gracefully if =ffprobe= isn't installed in the test environment, but exercising the fallback path unconditionally), including a test asserting the UTC→local conversion lands on the expected local date/time
+- [X] run tests — must pass before task 4
+- ⚠️ =ffmpeg=/=ffprobe= are not installed in this dev sandbox (host), so the real =ffprobe=-reading path (=test_get_video_date_uses_ffprobe_when_available=) is skipped here rather than exercised; it will run for real once Task 16's container (which installs ffmpeg) runs the suite via =docker compose run --rm prep pytest=. =tests/fixtures/sample.mp4= is a minimal hand-built placeholder MP4 container (ftyp+mdat boxes only, not a real encoded video) since ffmpeg wasn't available to generate a real one — sufficient for extension-dispatch and mtime-fallback tests, but not a playable video; revisit if Task 6/16 needs a real sample video for poster-frame generation tests.
 
 *** TODO Task 4: publish.yaml manifest module
 
