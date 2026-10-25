@@ -528,17 +528,20 @@ can't simulate.
 - ➕ added =remove_user(data, username)= to =prep/users.py= (not explicitly listed in this task's Files, but needed for the same "error clearly if unknown" behavior =add_user=/=update_password= already provide, following that exact pattern) and a matching =test_remove_user_success=/=test_remove_user_unknown_user_raises= pair in =tests/test_users.py=
 - ➕ =remove_user_from_manifests='s tests landed in =tests/test_manifest.py= (alongside the rest of =prep/manifest.py='s tests) rather than =tests/test_users.py=, since that's where the function itself lives; the end-to-end CLI test (=prep users delete= through the full users.yml + manifest + Caddyfile pipeline) is in =tests/test_users.py= as the plan's Files list specifies
 
-*** TODO Task 14: Album page JS (scroll buttons, swipe, note sizing)
+*** DONE Task 14: Album page JS (scroll buttons, swipe, note sizing)
 
 *Files:*
 - Create: =prep/static/album-page.js=
 - Modify: =prep/templates/album_page.html=
 
-- [ ] implement hover-activated left/right scroll buttons that call =scrollBy()= on the grid's =scroll-snap= container, shown/hidden purely via the =.album-grid= container's own CSS (JS only toggles a class, never sets inline styles)
-- [ ] rely on native =scroll-snap= + =overflow-x: auto= for drag/swipe (already in the CSS from task 8); JS adds no custom swipe handling here since native behavior covers it
-- [ ] implement the note-text shrink-to-fit pass in JS from the start (not contingent on checking =clamp()= first — =clamp()= scales with the viewport, not with a note's specific grid cell, so it can't satisfy "as large as possible but fitting within the slot" on its own): on load, measure each =.note-slot='s box and binary-search/iterate a =--note-font-size= custom property (set via =element.style.setProperty=, consistent with the Task 7 "custom-properties-only" =style= rule) until the text fits
-- [ ] wire the script tag into =album_page.html= (deferred/async load, no blocking)
-- [ ] manual verification only for this task (no meaningful unit-testable logic beyond what task 8's tests already cover) — note this explicitly rather than writing a hollow test
+- [X] implement hover-activated left/right scroll buttons that call =scrollBy()= on the grid's =scroll-snap= container, shown/hidden purely via the =.album-grid= container's own CSS (JS only toggles a class, never sets inline styles)
+- [X] rely on native =scroll-snap= + =overflow-x: auto= for drag/swipe (already in the CSS from task 8); JS adds no custom swipe handling here since native behavior covers it
+- [X] implement the note-text shrink-to-fit pass in JS from the start (not contingent on checking =clamp()= first — =clamp()= scales with the viewport, not with a note's specific grid cell, so it can't satisfy "as large as possible but fitting within the slot" on its own): on load, measure each =.note-slot='s box and binary-search/iterate a =--note-font-size= custom property (set via =element.style.setProperty=, consistent with the Task 7 "custom-properties-only" =style= rule) until the text fits
+- [X] wire the script tag into =album_page.html= (deferred/async load, no blocking)
+- [X] manual verification only for this task (no meaningful unit-testable logic beyond what task 8's tests already cover) — note this explicitly rather than writing a hollow test
+- ➕ added a boundary-class toggle (=is-at-start=/=is-at-end= on =.album-grid-wrap=, set only via =classList.toggle=, never an inline style) so a scroll button that would be a no-op at the start/end of the scrollable area hides itself even on hover/focus — required a small, non-listed addition to =prep/static/album-page.css= (two new rules consuming those classes) beyond this task's own =Files:= list
+- ➕ also added a =.note-slot__text= rule to =prep/static/album-page.css= (=margin: 0; width: 100%; overflow-wrap: break-word=) — without it the note =<p>= sizes to its own content as a flex child instead of wrapping within the slot, which would make the JS's =scrollHeight=/=scrollWidth= fit-check meaningless; no literal property values are introduced into any =style= attribute, this is an ordinary CSS file rule
+- ⚠️ no real browser is available in this sandbox to visually confirm the shrink-to-fit sizing or hover/scroll behavior; =pytest= (full suite, unaffected by this pure-JS change) was run as the regression check per this task's own "manual verification only" note. Real-browser confirmation is deferred to Post-Completion's existing "Check note-slot text sizing" item.
 
 *** TODO Task 15: Picture view JS (keyboard/swipe nav) and logout
 

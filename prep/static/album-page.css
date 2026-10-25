@@ -81,6 +81,16 @@
   right: 0.5rem;
 }
 
+/* Task 14's JS toggles these two classes on the wrapper (never an inline
+ * style) as the grid scrolls, so a button that would be a no-op — already
+ * at the very start/end of the scrollable area — hides itself even on
+ * hover/focus. */
+.album-grid-wrap.is-at-start .scroll-button--prev,
+.album-grid-wrap.is-at-end .scroll-button--next {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
 .album-tile {
   grid-row: span var(--row-span, 1);
   grid-column: span var(--col-span, 1);
@@ -127,6 +137,16 @@
   /* Task 14's JS sets --note-font-size per instance once it measures the
    * slot; this fixed rule is what consumes it. */
   font-size: var(--note-font-size, 1rem);
+}
+
+/* The note's text must take the slot's full width so it wraps instead of
+ * growing wide as a flex child's default content-based size — required
+ * for Task 14's JS to measure scrollHeight/scrollWidth against the slot's
+ * fixed box correctly. */
+.note-slot__text {
+  margin: 0;
+  width: 100%;
+  overflow-wrap: break-word;
 }
 
 /* A small play-badge on video tiles, distinguishing a poster-frame thumbnail

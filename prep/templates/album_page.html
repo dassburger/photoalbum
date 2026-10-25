@@ -6,6 +6,10 @@
   <link rel="stylesheet" href="/static/album-page.css">
 {% endblock %}
 
+{% block extra_js %}
+  <script src="/static/album-page.js" defer></script>
+{% endblock %}
+
 {% block content %}
 <div class="album-page">
   <h1 class="album-page__title">{{ title }}</h1>
