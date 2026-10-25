@@ -425,6 +425,7 @@ def sync_shared_static(site_root: str | Path) -> Path:
     succeeded = False
     for _attempt in range(_STATIC_SWAP_MAX_ATTEMPTS):
         backup = site_root / f"{_STATIC_BACKUP_PREFIX}{uuid.uuid4().hex}"
+        attempted_forward_swap = False
         try:
             try:
                 dest.rename(backup)
@@ -434,32 +435,48 @@ def sync_shared_static(site_root: str | Path) -> Path:
                 # very first sync, or a concurrent call already moved it
                 # aside.
                 pass
+            attempted_forward_swap = True
             staging.rename(dest)
             succeeded = True
             break
         except Exception as swap_exc:
             last_exc = swap_exc
+            # Only the forward swap (staging.rename(dest)) actually
+            # failing can mean a *different*, concurrent call's own
+            # forward swap landed valid new content at `dest` in the
+            # meantime -- that's the one case where stopping here
+            # without retrying is genuinely fine. Check dest's validity
+            # right now, before we touch `backup` at all below: if we
+            # restored our own backup first and then checked, "dest is
+            # valid" would always be true (we just put it there
+            # ourselves) and would wrongly look identical to a
+            # concurrent success, masking the fact that OUR intended
+            # new content (still sitting untouched in `staging`) was
+            # never actually applied.
+            resolved_by_other = False
+            if attempted_forward_swap:
+                try:
+                    resolved_by_other = dest.is_dir() and any(dest.iterdir())
+                except OSError:
+                    # dest was renamed/removed by yet another concurrent
+                    # call in between the is_dir() and iterdir() calls
+                    # above -- treat exactly like "not valid yet".
+                    resolved_by_other = False
+            if resolved_by_other:
+                succeeded = True
+                break
             if backup.exists() and not dest.exists():
-                # Put the previous static/ back so the site is never left
-                # with none at all while this loop decides what to do.
+                # Not resolved by anyone else. Put the previous static/
+                # back as a stopgap so the site is never left with none
+                # at all while we retry -- but this is NOT success: our
+                # own new content is still sitting in `staging`, untried
+                # or unapplied, so the loop must retry the forward swap
+                # rather than stopping here.
                 try:
                     backup.rename(dest)
                     pending_backups.remove(backup)
                 except Exception:
                     pass
-            try:
-                dest_now_valid = dest.is_dir() and any(dest.iterdir())
-            except OSError:
-                # dest was renamed/removed by yet another concurrent
-                # call in between the is_dir() and iterdir() calls above
-                # -- treat exactly like "not valid yet" and retry.
-                dest_now_valid = False
-            if dest_now_valid:
-                # dest is valid again, whether because the restore above
-                # succeeded or because a concurrent call's own forward
-                # swap won the race -- nothing more to do.
-                succeeded = True
-                break
             time.sleep(0.01)
 
     shutil.rmtree(staging, ignore_errors=True)

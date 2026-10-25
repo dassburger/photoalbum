@@ -175,6 +175,103 @@ def test_sync_shared_static_survives_concurrent_calls(tmp_path: Path):
     assert leftover == []
 
 
+def test_sync_shared_static_retries_forward_swap_instead_of_silently_discarding_update(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Regression test (iteration-5 review finding): on a *refresh* (i.e.
+    `<site_root>/static/` already exists from a prior successful sync --
+    the normal steady state after the first publish), a single failed
+    forward swap (`staging.rename(dest)`) must be retried, not silently
+    treated as success.
+
+    The old buggy code checked `dest.is_dir() and any(dest.iterdir())`
+    *after* restoring `backup` back onto `dest` as a stopgap -- which is
+    always true once that restore happens, regardless of whether
+    anything new was ever applied. That let it stop after exactly one
+    failed attempt, discard the real new content still sitting in
+    `staging` (via the post-loop rmtree), and report success while
+    `dest` kept its OLD pre-run content. Reproduced here by making the
+    first `staging.rename(dest)` call raise, then letting it succeed on
+    retry: the fixed implementation must call `staging.rename(dest)`
+    (identified by the staging-dir prefix as the source and `dest` as
+    the target) at least twice, not stop at one.
+    """
+    import prep.render as render_module
+
+    site_root = tmp_path / "site"
+    # Establish a REAL pre-existing dest via a normal successful sync --
+    # the "already published once" refresh case this bug is specific to
+    # (the control case, a first-ever sync with no pre-existing dest,
+    # already retries correctly and is not what's under test here).
+    dest = sync_shared_static(site_root)
+    old_content = (dest / "base.css").read_text()
+    assert old_content
+
+    real_rename = Path.rename
+    staging_prefix = render_module._STATIC_STAGING_PREFIX
+    forward_swap_calls = {"count": 0}
+
+    def flaky_rename(self: Path, target):
+        target_path = Path(target)
+        if self.name.startswith(staging_prefix) and target_path == dest:
+            forward_swap_calls["count"] += 1
+            if forward_swap_calls["count"] == 1:
+                raise OSError("simulated forward-swap failure (first attempt only)")
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", flaky_rename)
+
+    result = sync_shared_static(site_root)
+
+    assert result == dest
+    assert forward_swap_calls["count"] >= 2, (
+        "the forward swap was not retried after its first failure -- "
+        "the fixed bug would silently stop after exactly one attempt and "
+        "discard the pending update"
+    )
+    assert dest.is_dir() and any(dest.iterdir())
+    assert (dest / "base.css").read_text() == old_content
+
+    leftover = [p.name for p in site_root.iterdir() if p.name != STATIC_DIRNAME]
+    assert leftover == []
+
+
+def test_sync_shared_static_raises_loudly_on_refresh_when_forward_swap_never_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Companion to the test above: when the forward swap fails on EVERY
+    attempt (retry budget exhausted) during a refresh, the function must
+    raise a clear RuntimeError -- not silently return success -- and
+    must leave `dest` holding its restored-stopgap (old, valid) content
+    rather than nothing at all, per its own documented contract.
+    """
+    import prep.render as render_module
+
+    site_root = tmp_path / "site"
+    dest = sync_shared_static(site_root)
+    old_content = (dest / "base.css").read_text()
+
+    real_rename = Path.rename
+    staging_prefix = render_module._STATIC_STAGING_PREFIX
+
+    def always_fail_forward_swap(self: Path, target):
+        target_path = Path(target)
+        if self.name.startswith(staging_prefix) and target_path == dest:
+            raise OSError("simulated persistent forward-swap failure")
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", always_fail_forward_swap)
+
+    with pytest.raises(RuntimeError, match="failed to refresh shared static assets"):
+        sync_shared_static(site_root)
+
+    assert dest.is_dir(), "site must not be left with no static/ at all"
+    assert (dest / "base.css").read_text() == old_content
+
+    leftover = [p.name for p in site_root.iterdir() if p.name != STATIC_DIRNAME]
+    assert leftover == []
+
+
 # -- render_album_page -----------------------------------------------------
 
 
