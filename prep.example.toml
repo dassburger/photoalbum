@@ -1,0 +1,15 @@
+# Deployment-specific configuration for `prep`.
+#
+# Copy this file to `prep.toml` (gitignored) and fill in real values for your
+# deployment. `prep.toml` is read by prep/cli.py.
+
+# Public domain name the site is served under (used for Caddy's automatic
+# HTTPS / Let's Encrypt certificate issuance).
+site_domain = "photos.example.com"
+
+# Email address Let's Encrypt uses for expiry/revocation notices.
+acme_email = "you@example.com"
+
+# Absolute path to the root of the photo archive (mounted into the prep and
+# caddy containers), e.g. "/home/you/Pictures".
+pictures_root = "/home/you/Pictures"

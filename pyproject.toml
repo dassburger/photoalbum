@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "prep"
+version = "0.1.0"
+description = "CLI to prepare and publish curated photo albums as a static HTML site, plus Caddy routing/auth config generation."
+requires-python = ">=3.11"
+dependencies = [
+    "Pillow",
+    "piexif",
+    "Jinja2",
+    "ruamel.yaml",
+    "bcrypt",
+    "click",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[project.scripts]
+prep = "prep.cli:cli"
+
+[tool.setuptools.packages.find]
+include = ["prep*"]
+
+[tool.setuptools.package-data]
+prep = ["templates/*.html", "static/*"]

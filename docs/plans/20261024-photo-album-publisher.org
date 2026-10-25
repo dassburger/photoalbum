@@ -317,7 +317,7 @@ can't simulate.
 
 ** Implementation Steps
 
-*** TODO Task 1: Project scaffolding
+*** DONE Task 1: Project scaffolding
 
 *Files:*
 - Create: =pyproject.toml=
@@ -325,12 +325,12 @@ can't simulate.
 - Create: =.gitignore=
 - Create: =tests/__init__.py=
 
-- [ ] set up =pyproject.toml= with dependencies: Pillow, piexif (sole EXIF library — not exifread; settled to avoid redundant dependencies), Jinja2, ruamel.yaml, bcrypt, click, pytest (dev), and a =[project.scripts] prep = "prep.cli:cli"= entry point
-- [ ] create the =prep/= package skeleton (empty modules listed in the repo layout, each with a one-line docstring) — *except* =prep/cli.py= and =prep/users.py=, which Task 2 creates directly with real content
-- [ ] add =.gitignore= for =site/=, =caddy/Caddyfile=, =__pycache__/=, =.venv/=, etc.
-- [ ] add a minimal config source for deployment-specific values Task 12 needs (site domain, ACME email, pictures-root path) — e.g. a checked-in =prep.example.toml= plus a gitignored =prep.toml= read by =prep/cli.py=
-- [ ] verify =pip install -e .= (or equivalent) and =pytest= both run cleanly with zero tests
-- [ ] run tests — must pass (trivially) before task 2
+- [X] set up =pyproject.toml= with dependencies: Pillow, piexif (sole EXIF library — not exifread; settled to avoid redundant dependencies), Jinja2, ruamel.yaml, bcrypt, click, pytest (dev), and a =[project.scripts] prep = "prep.cli:cli"= entry point
+- [X] create the =prep/= package skeleton (empty modules listed in the repo layout, each with a one-line docstring) — *except* =prep/cli.py= and =prep/users.py=, which Task 2 creates directly with real content
+- [X] add =.gitignore= for =site/=, =caddy/Caddyfile=, =__pycache__/=, =.venv/=, etc.
+- [X] add a minimal config source for deployment-specific values Task 12 needs (site domain, ACME email, pictures-root path) — e.g. a checked-in =prep.example.toml= plus a gitignored =prep.toml= read by =prep/cli.py=
+- [X] verify =pip install -e .= (or equivalent) and =pytest= both run cleanly with zero tests
+- [X] run tests — must pass (trivially) before task 2
 
 *** TODO Task 2: users.yml module and user-management CLI (add/passwd, hash-password)
 
