@@ -446,20 +446,20 @@ can't simulate.
 - [X] write tests asserting the rendered album page contains one grid entry per manifest item in its authoritative order and a separator per day boundary
 - [X] run tests — must pass before task 9
 
-*** TODO Task 9: Picture view HTML generation
+*** DONE Task 9: Picture view HTML generation
 
 *Files:*
 - Modify: =prep/render.py=
 - Create: =prep/templates/picture_view.html=
 - Modify: =tests/test_render.py=
 
-- [ ] write =prep/templates/picture_view.html=: full-size =<img>= or =<video controls>= depending on item type, real =<a href>= prev/next links to adjacent items' pages (first/last item has one side disabled/omitted), back-to-album link
-- [ ] implement =render_picture_pages(album_info, album_dir)= writing one HTML file per item named from its *source filename*, not its position (e.g. =<album_dir>/picture/IMG_0001.html=), so inserting or removing an item elsewhere in the album never renames another item's page/bookmark. Notes have no picture page (they're inline-only on the album page) and are skipped when computing prev/next for their neighbors
-- [ ] implement cleanup: when re-run after =items= shrinks, remove =picture/<name>.html= pages for items no longer present
-- [ ] confirm the album page's (Task 8) links to picture pages resolve to these real generated files
-- [ ] write tests for first-item/last-item edge cases (no prev / no next), a middle item (both links present and pointing at correct adjacent files by filename-derived URL), video vs. photo markup selection, and a regression test that inserting a new item before an existing one leaves the existing item's page filename/URL unchanged
-- [ ] write a test for the cleanup behavior (stale picture page removed after its item leaves =items=)
-- [ ] run tests — must pass before task 10
+- [X] write =prep/templates/picture_view.html=: full-size =<img>= or =<video controls>= depending on item type, real =<a href>= prev/next links to adjacent items' pages (first/last item has one side disabled/omitted), back-to-album link
+- [X] implement =render_picture_pages(album_info, album_dir)= writing one HTML file per item named from its *source filename*, not its position (e.g. =<album_dir>/picture/IMG_0001.html=), so inserting or removing an item elsewhere in the album never renames another item's page/bookmark. Notes have no picture page (they're inline-only on the album page) and are skipped when computing prev/next for their neighbors
+- [X] implement cleanup: when re-run after =items= shrinks, remove =picture/<name>.html= pages for items no longer present
+- [X] confirm the album page's (Task 8) links to picture pages resolve to these real generated files
+- [X] write tests for first-item/last-item edge cases (no prev / no next), a middle item (both links present and pointing at correct adjacent files by filename-derived URL), video vs. photo markup selection, and a regression test that inserting a new item before an existing one leaves the existing item's page filename/URL unchanged
+- [X] write a test for the cleanup behavior (stale picture page removed after its item leaves =items=)
+- [X] run tests — must pass before task 10
 
 *** TODO Task 10: Albums-index HTML generation
 

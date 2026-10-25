@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+
+{% block title %}{{ file }} · {{ title }} · Photo Albums{% endblock %}
+
+{% block extra_css %}
+  <link rel="stylesheet" href="/static/picture-view.css">
+{% endblock %}
+
+{% block content %}
+<div class="picture-view">
+  {% if is_video %}
+  <video class="picture-view__media" controls>
+    <source src="../{{ file }}"{% if mime_type %} type="{{ mime_type }}"{% endif %}>
+  </video>
+  {% else %}
+  <img class="picture-view__media" src="../{{ file }}" alt="{{ file }}">
+  {% endif %}
+  {% if prev_href %}
+  <a class="picture-nav-button picture-nav-button--prev" href="{{ prev_href }}" aria-label="Previous picture">&#8249;</a>
+  {% endif %}
+  {% if next_href %}
+  <a class="picture-nav-button picture-nav-button--next" href="{{ next_href }}" aria-label="Next picture">&#8250;</a>
+  {% endif %}
+  <a class="picture-view__back" href="../">&#8617; Back to album</a>
+</div>
+{% endblock %}

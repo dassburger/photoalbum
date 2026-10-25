@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import mimetypes
 import os
 import shutil
 import tempfile
@@ -160,6 +161,65 @@ def render_album_page(album_info: AlbumInfo, album_dir: str | Path) -> Path:
     dest = album_dir / "index.html"
     _atomic_write_text(dest, html)
     return dest
+
+
+def render_picture_pages(album_info: AlbumInfo, album_dir: str | Path) -> list[Path]:
+    """Render one picture-view page per non-note item into <album_dir>/picture/.
+
+    Each page is named from its *source filename's* stem via
+    `picture_page_filename` (the exact same helper Task 8's album page uses
+    to build its links), never from its position in `items` — so inserting
+    or removing an item elsewhere in the manifest never renames another
+    item's page/bookmark.
+
+    Notes have no picture page (they're inline-only on the album page) and
+    are excluded entirely before computing prev/next, so a note sitting
+    between two photos never breaks their adjacency.
+
+    Also removes any `picture/<name>.html` left over from an item no
+    longer present in `items` (re-run after `items` shrinks), so stale
+    generated pages never linger in the real album folder.
+
+    Returns the list of paths written (not including any removed stale
+    pages).
+    """
+    album_dir = Path(album_dir)
+    manifest = album_info.manifest
+    picture_dir = album_dir / "picture"
+
+    media_items = [item for item in manifest.items if not item.is_note]
+
+    written: list[Path] = []
+    expected_filenames: set[str] = set()
+    for index, item in enumerate(media_items):
+        filename = picture_page_filename(item.file)
+        expected_filenames.add(filename)
+
+        prev_item = media_items[index - 1] if index > 0 else None
+        next_item = media_items[index + 1] if index + 1 < len(media_items) else None
+
+        is_video = Path(item.file).suffix.lower() in VIDEO_EXTENSIONS
+        mime_type, _ = mimetypes.guess_type(item.file)
+
+        html = _env.get_template("picture_view.html").render(
+            title=manifest.title,
+            file=item.file,
+            is_video=is_video,
+            mime_type=mime_type,
+            prev_href=picture_page_filename(prev_item.file) if prev_item else None,
+            next_href=picture_page_filename(next_item.file) if next_item else None,
+        )
+
+        dest = picture_dir / filename
+        _atomic_write_text(dest, html)
+        written.append(dest)
+
+    if picture_dir.exists():
+        for existing in picture_dir.iterdir():
+            if existing.is_file() and existing.name not in expected_filenames:
+                existing.unlink()
+
+    return written
 
 
 def sync_shared_static(site_root: str | Path) -> Path:

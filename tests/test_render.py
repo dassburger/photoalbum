@@ -13,7 +13,13 @@ from pathlib import Path
 import pytest
 
 from prep.manifest import AlbumInfo, Manifest, ManifestItem
-from prep.render import STATIC_DIRNAME, render_album_page, sync_shared_static
+from prep.render import (
+    STATIC_DIRNAME,
+    picture_page_filename,
+    render_album_page,
+    render_picture_pages,
+    sync_shared_static,
+)
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "prep" / "templates"
 STATIC_SRC_DIR = Path(__file__).resolve().parent.parent / "prep" / "static"
@@ -230,3 +236,152 @@ def test_render_album_page_single_day_no_separator_duplication(tmp_path: Path):
     html = render_album_page(album_info, album_dir).read_text()
     assert html.count('class="day-separator"') == 1
     assert html.count('class="album-tile"') == 1
+
+
+# -- render_picture_pages ---------------------------------------------------
+
+
+def _build_album_with_video(tmp_path: Path) -> AlbumInfo:
+    album_dir = tmp_path / "video_album"
+    album_dir.mkdir()
+    shutil.copy(FIXTURES_DIR / "sample_no_exif.jpg", album_dir / "IMG_0001.jpg")
+    shutil.copy(FIXTURES_DIR / "sample.mp4", album_dir / "VID_0002.mp4")
+
+    manifest = Manifest(
+        album_dir=album_dir,
+        title="Video Album",
+        public=True,
+        allowed_users=[],
+        items=[ManifestItem(file="IMG_0001.jpg"), ManifestItem(file="VID_0002.mp4")],
+    )
+    return AlbumInfo(path=album_dir, manifest=manifest)
+
+
+def test_render_picture_pages_writes_one_file_per_media_item(tmp_path: Path):
+    album_info = _build_album(tmp_path)
+    written = render_picture_pages(album_info, album_info.path)
+
+    assert len(written) == 3
+    for item in ("IMG_0001.jpg", "IMG_0002.jpg", "IMG_0003.jpg"):
+        dest = album_info.path / "picture" / picture_page_filename(item)
+        assert dest in written
+        assert dest.exists()
+
+
+def test_render_picture_pages_first_item_has_no_prev_link(tmp_path: Path):
+    album_info = _build_album(tmp_path)
+    render_picture_pages(album_info, album_info.path)
+    html = (album_info.path / "picture" / "IMG_0001.html").read_text()
+
+    assert "picture-nav-button--prev" not in html
+    assert (
+        'class="picture-nav-button picture-nav-button--next" href="IMG_0002.html"'
+        in html
+    )
+
+
+def test_render_picture_pages_last_item_has_no_next_link(tmp_path: Path):
+    album_info = _build_album(tmp_path)
+    render_picture_pages(album_info, album_info.path)
+    html = (album_info.path / "picture" / "IMG_0003.html").read_text()
+
+    assert "picture-nav-button--next" not in html
+    assert (
+        'class="picture-nav-button picture-nav-button--prev" href="IMG_0002.html"'
+        in html
+    )
+
+
+def test_render_picture_pages_middle_item_has_both_links_skipping_note(tmp_path: Path):
+    album_info = _build_album(tmp_path)
+    render_picture_pages(album_info, album_info.path)
+    html = (album_info.path / "picture" / "IMG_0002.html").read_text()
+
+    # The note between IMG_0001 and IMG_0002 in the manifest has no page of
+    # its own and must not break photo-to-photo adjacency.
+    assert (
+        'class="picture-nav-button picture-nav-button--prev" href="IMG_0001.html"'
+        in html
+    )
+    assert (
+        'class="picture-nav-button picture-nav-button--next" href="IMG_0003.html"'
+        in html
+    )
+
+
+def test_render_picture_pages_back_link_and_media(tmp_path: Path):
+    album_info = _build_album(tmp_path)
+    render_picture_pages(album_info, album_info.path)
+    html = (album_info.path / "picture" / "IMG_0001.html").read_text()
+
+    assert 'href="../"' in html
+    assert 'src="../IMG_0001.jpg"' in html
+    assert "<video" not in html
+
+
+def test_render_picture_pages_video_item_uses_video_tag(tmp_path: Path):
+    album_info = _build_album_with_video(tmp_path)
+    render_picture_pages(album_info, album_info.path)
+
+    photo_html = (album_info.path / "picture" / "IMG_0001.html").read_text()
+    video_html = (album_info.path / "picture" / "VID_0002.html").read_text()
+
+    assert "<video" in video_html
+    assert 'src="../VID_0002.mp4"' in video_html
+    assert "<video" not in photo_html
+    assert "<img" in photo_html
+
+
+def test_render_picture_pages_filename_derived_from_source_stem_not_position(
+    tmp_path: Path,
+):
+    album_info = _build_album(tmp_path)
+    render_picture_pages(album_info, album_info.path)
+    before = (album_info.path / "picture" / "IMG_0002.html").read_text()
+
+    # Insert a new item before IMG_0001 — IMG_0002's own page filename and
+    # its neighbor links must be unaffected by its new position index.
+    album_info.manifest.items.insert(0, ManifestItem(file="IMG_0000.jpg"))
+    shutil.copy(FIXTURES_DIR / "sample_no_exif.jpg", album_info.path / "IMG_0000.jpg")
+    render_picture_pages(album_info, album_info.path)
+
+    after = (album_info.path / "picture" / "IMG_0002.html").read_text()
+    assert before == after
+    assert (album_info.path / "picture" / "IMG_0002.html").exists()
+
+
+def test_render_picture_pages_cleanup_removes_stale_pages(tmp_path: Path):
+    album_info = _build_album(tmp_path)
+    render_picture_pages(album_info, album_info.path)
+    stale_page = album_info.path / "picture" / "IMG_0003.html"
+    assert stale_page.exists()
+
+    # Simulate IMG_0003 leaving the manifest on a later `prep publish` run.
+    album_info.manifest.items = [
+        item for item in album_info.manifest.items if item.file != "IMG_0003.jpg"
+    ]
+    render_picture_pages(album_info, album_info.path)
+
+    assert not stale_page.exists()
+    assert (album_info.path / "picture" / "IMG_0001.html").exists()
+    assert (album_info.path / "picture" / "IMG_0002.html").exists()
+
+
+def test_render_picture_pages_only_custom_property_style_attributes(tmp_path: Path):
+    album_info = _build_album(tmp_path)
+    render_picture_pages(album_info, album_info.path)
+    for page in (album_info.path / "picture").glob("*.html"):
+        html = page.read_text()
+        for style_value in _iter_style_attributes(html):
+            _assert_only_custom_properties(style_value, source=str(page))
+
+
+def test_album_page_links_resolve_to_real_picture_pages(tmp_path: Path):
+    album_info = _build_album(tmp_path)
+    album_html = render_album_page(album_info, album_info.path).read_text()
+    render_picture_pages(album_info, album_info.path)
+
+    for item in ("IMG_0001.jpg", "IMG_0002.jpg", "IMG_0003.jpg"):
+        href = f"picture/{picture_page_filename(item)}"
+        assert f'href="{href}"' in album_html
+        assert (album_info.path / href).exists()
