@@ -392,7 +392,7 @@ can't simulate.
 - [X] write tests for =compute_grid_positions= (deterministic output across repeated calls, day-separator markers placed correctly, notes get a distinct span shape from photos, portrait vs. landscape aspect ratios produce different span shapes)
 - [X] run tests — must pass before task 6
 
-*** TODO Task 6: Thumbnail and video poster-frame generation
+*** DONE Task 6: Thumbnail and video poster-frame generation
 
 *Files:*
 - Create: =prep/assets.py=
@@ -400,17 +400,18 @@ can't simulate.
 - Create: =tests/fixtures/sample_rotated.jpg=
 - Create: =tests/fixtures/sample_corrupt.jpg=
 
-- [ ] implement =generate_photo_thumbnail(src, dest, max_size)= using Pillow, applying =ImageOps.exif_transpose= before resizing (so portrait photos with an EXIF Orientation tag aren't rotated), writing (atomically — temp file + rename) into =<album>/.web/thumbs/=, and returning the resulting (width, height) for Task 5's aspect-ratio input
-- [ ] implement =generate_video_poster(src, dest)= via =ffmpeg= subprocess (extract a single early frame as a JPEG), written alongside photo thumbnails, also returning its (width, height)
-- [ ] implement =pick_cover_thumbnails(album_items, count=3)= choosing which generated thumbnails represent the album on the index page (e.g. first/middle/last published photo)
-- [ ] implement cleanup: when re-run after =items= shrinks, remove thumbnails/posters under =.web/thumbs/= for items no longer present, so removed items don't leave stale generated files behind in the real album folder forever
-- [ ] raise a clear, caught error (hard-fail per Development Approach, not a warning) when Pillow/ffmpeg can't read a source file at all (corrupt/unreadable image or video), identifying the offending filename
-- [ ] write tests for =generate_photo_thumbnail= against the fixture JPEGs (correct output dimensions, aspect ratio preserved, returned dimensions match) and against a rotated-orientation fixture (=tests/fixtures/sample_rotated.jpg= with an Orientation EXIF tag) asserting the output is right-side-up
-- [ ] write tests for =generate_video_poster= against the fixture video (output file exists and is a valid JPEG), skipping gracefully with a clear skip message if =ffmpeg= isn't available in the test environment
-- [ ] write tests for =pick_cover_thumbnails= selection logic on a small/large item list
-- [ ] write a test for the cleanup behavior (stale thumbnail removed after its item leaves =items=)
-- [ ] write a test asserting a corrupt/truncated fixture image raises the clear error instead of silently producing a broken thumbnail
-- [ ] run tests — must pass before task 7
+- [X] implement =generate_photo_thumbnail(src, dest, max_size)= using Pillow, applying =ImageOps.exif_transpose= before resizing (so portrait photos with an EXIF Orientation tag aren't rotated), writing (atomically — temp file + rename) into =<album>/.web/thumbs/=, and returning the resulting (width, height) for Task 5's aspect-ratio input
+- [X] implement =generate_video_poster(src, dest)= via =ffmpeg= subprocess (extract a single early frame as a JPEG), written alongside photo thumbnails, also returning its (width, height)
+- [X] implement =pick_cover_thumbnails(album_items, count=3)= choosing which generated thumbnails represent the album on the index page (e.g. first/middle/last published photo)
+- [X] implement cleanup: when re-run after =items= shrinks, remove thumbnails/posters under =.web/thumbs/= for items no longer present, so removed items don't leave stale generated files behind in the real album folder forever
+- [X] raise a clear, caught error (hard-fail per Development Approach, not a warning) when Pillow/ffmpeg can't read a source file at all (corrupt/unreadable image or video), identifying the offending filename
+- [X] write tests for =generate_photo_thumbnail= against the fixture JPEGs (correct output dimensions, aspect ratio preserved, returned dimensions match) and against a rotated-orientation fixture (=tests/fixtures/sample_rotated.jpg= with an Orientation EXIF tag) asserting the output is right-side-up
+- [X] write tests for =generate_video_poster= against the fixture video (output file exists and is a valid JPEG), skipping gracefully with a clear skip message if =ffmpeg= isn't available in the test environment
+- [X] write tests for =pick_cover_thumbnails= selection logic on a small/large item list
+- [X] write a test for the cleanup behavior (stale thumbnail removed after its item leaves =items=)
+- [X] write a test asserting a corrupt/truncated fixture image raises the clear error instead of silently producing a broken thumbnail
+- [X] run tests — must pass before task 7
+- ⚠️ Same environment constraint as Task 3: this sandbox has no =ffmpeg=/=ffprobe= installed, so =test_generate_video_poster_against_real_ffmpeg= skips gracefully here (verified via =pytest -rs=) rather than exercising the real subprocess path. The ffmpeg-missing and subprocess-failure/unreadable-output error paths in =generate_video_poster= are instead exercised directly via mocking (=shutil.which=/=subprocess.run= monkeypatched), so that logic is covered without a real binary. Poster-frame generation against a *real* ffmpeg remains unverified in this sandbox and must be re-checked once Task 16's container (which installs ffmpeg) exists and runs the suite via =docker compose run --rm prep pytest=.
 
 *** TODO Task 7: Shared CSS/JS scaffolding and base templates
 
