@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import fcntl
+import os
 import shutil
 import tempfile
 import tomllib
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -396,6 +399,48 @@ def _is_video(filename: str) -> bool:
     return Path(filename).suffix.lower() in VIDEO_EXTENSIONS
 
 
+BACKUP_DIR_PREFIX = ".thumbs-backup-"
+STAGING_DIR_PREFIX = ".thumbs-staging-"
+
+
+def _heal_orphaned_swap_dirs(web_dir: Path, final_dir: Path) -> None:
+    """Self-heal/clean up `.thumbs-backup-*` / `.thumbs-staging-*` leftovers
+    from a previous run that was killed mid-swap or mid-generation, before
+    this run does any work of its own.
+
+    Two cases:
+    - `final_dir` is missing (the process was killed between the two
+      swap renames, so the old thumbnails are sitting in an orphaned
+      backup dir and nothing is currently live) -> restore the most
+      recently modified orphaned backup into `final_dir`'s place. Any
+      further orphaned backups (multiple crashed runs in a row, rare) are
+      discarded -- only one can be "the" backup to restore.
+    - `final_dir` exists (healthy, either because there was nothing to
+      restore or because it was never swapped out) -> any orphaned backup
+      dirs found are stale leftovers from an already-resolved crash and
+      are safe to discard.
+
+    Orphaned staging dirs are always safe to discard either way: a
+    staging dir only ever holds a candidate thumbnail set that was never
+    (or not yet) swapped into `final_dir`.
+    """
+    if not web_dir.is_dir():
+        return
+
+    orphaned_backups = [p for p in web_dir.glob(f"{BACKUP_DIR_PREFIX}*") if p.is_dir()]
+    orphaned_staging = [p for p in web_dir.glob(f"{STAGING_DIR_PREFIX}*") if p.is_dir()]
+
+    if not final_dir.exists() and orphaned_backups:
+        survivor = max(orphaned_backups, key=lambda p: p.stat().st_mtime)
+        survivor.rename(final_dir)
+        orphaned_backups.remove(survivor)
+
+    for stale in orphaned_backups:
+        shutil.rmtree(stale, ignore_errors=True)
+    for stale in orphaned_staging:
+        shutil.rmtree(stale, ignore_errors=True)
+
+
 def _generate_assets_atomically(
     album_dir: Path, media_items: list[ManifestItem]
 ) -> None:
@@ -421,10 +466,29 @@ def _generate_assets_atomically(
     entire directory in as one unit fixes both problems: the live
     `final_dir` only ever changes via a single rename, and on failure the
     previous, still-valid directory is renamed right back into place.
+
+    `backup_dir` (the directory holding the previous, pre-run thumbnails
+    while the swap is in flight) is ONLY ever deleted once it's confirmed
+    safe: either the forward swap succeeded outright, or -- on a forward
+    swap failure -- the recovery rename that restores `backup_dir` back
+    into `final_dir`'s place itself succeeded. If that recovery rename
+    ALSO fails (iteration-3 review finding #1: same root cause as the
+    original failure, e.g. disk full, can plausibly affect both renames),
+    `backup_dir` is deliberately left on disk and a loud error naming its
+    exact path is raised instead of silently deleting the one remaining
+    valid copy of the album's thumbnails.
+
+    Also self-heals orphaned `.thumbs-backup-*`/`.thumbs-staging-*`
+    directories left by a previous run that was killed mid-swap or
+    mid-generation, before doing any of its own work (see
+    `_heal_orphaned_swap_dirs`).
     """
     web_dir = album_dir / ".web"
     web_dir.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(dir=str(web_dir), prefix=".thumbs-staging-"))
+    final_dir = thumbs_dir(album_dir)
+    _heal_orphaned_swap_dirs(web_dir, final_dir)
+
+    staging = Path(tempfile.mkdtemp(dir=str(web_dir), prefix=STAGING_DIR_PREFIX))
     try:
         for item in media_items:
             src = album_dir / item.file
@@ -437,26 +501,49 @@ def _generate_assets_atomically(
         shutil.rmtree(staging, ignore_errors=True)
         raise
 
-    final_dir = thumbs_dir(album_dir)
-    backup_dir = web_dir / f".thumbs-backup-{uuid.uuid4().hex}"
-    swapped_out = False
+    backup_dir = web_dir / f"{BACKUP_DIR_PREFIX}{uuid.uuid4().hex}"
+    # Only set True once it's confirmed safe to delete backup_dir: either
+    # the forward swap completed normally, or the restore-back rename
+    # (on a forward-swap failure) itself succeeded.
+    backup_dir_safe_to_remove = False
     try:
         if final_dir.exists():
             final_dir.rename(backup_dir)
-            swapped_out = True
         staging.rename(final_dir)
-    except Exception:
+        backup_dir_safe_to_remove = True
+    except Exception as swap_exc:
         # The swap itself is just two renames -- if the first (moving the
         # previous final_dir aside) succeeded but the second (moving
         # staging into final_dir's place) failed, restore the previous,
         # still-valid thumbnails rather than leaving final_dir empty or
         # missing.
-        if swapped_out and backup_dir.exists() and not final_dir.exists():
-            backup_dir.rename(final_dir)
-        raise
+        if backup_dir.exists() and not final_dir.exists():
+            try:
+                backup_dir.rename(final_dir)
+            except Exception as restore_exc:
+                # The recovery rename itself failed too (plausibly the
+                # same root cause as swap_exc -- e.g. disk full/EACCES
+                # affecting both renames). backup_dir is the ONLY
+                # remaining intact copy of this album's thumbnails --
+                # deliberately left on disk, NOT deleted, and a loud,
+                # specific error is raised instead of silently losing it.
+                raise RuntimeError(
+                    f"prep publish: failed to generate new thumbnails for "
+                    f"{album_dir}, and the automatic restore of the "
+                    f"previous thumbnails afterward ALSO failed "
+                    f"({restore_exc!r}). Your last known-good thumbnails "
+                    f"are still intact and have NOT been deleted -- they "
+                    f"are sitting at {backup_dir}. To recover, manually "
+                    f"move/rename that directory to {final_dir}, then "
+                    f"investigate the underlying filesystem error (disk "
+                    f"full? permissions?) before publishing again."
+                ) from swap_exc
+            backup_dir_safe_to_remove = True
+        raise swap_exc
     finally:
         shutil.rmtree(staging, ignore_errors=True)
-        shutil.rmtree(backup_dir, ignore_errors=True)
+        if backup_dir_safe_to_remove:
+            shutil.rmtree(backup_dir, ignore_errors=True)
 
     cleanup_stale_thumbnails(album_dir, [item.file for item in media_items])
 
@@ -484,6 +571,48 @@ def _copy_covers(
         if existing.is_file() and existing.name not in keep:
             existing.unlink()
     return filenames
+
+
+PUBLISH_LOCK_FILENAME = ".prep-publish.lock"
+
+
+@contextmanager
+def _album_publish_lock(album_dir: Path):
+    """Hold a simple, local, exclusive, non-blocking lock
+    (`fcntl.flock(LOCK_EX | LOCK_NB)`) on a small marker file directly
+    under `album_dir` for the duration of the asset-generation/render/
+    index-refresh phases of a single album's publish.
+
+    Without this, two concurrent `prep publish <same-album>` invocations
+    (e.g. a manual run overlapping an unattended Claude Code Remote
+    Control session) can race on `_generate_assets_atomically`'s
+    final_dir.exists() check and interleave their directory swaps -- the
+    exact kind of double-rename-failure scenario that can otherwise cost
+    both processes their thumbnails. This is intentionally a simple,
+    single-host, single-process-exclusivity primitive -- not a
+    distributed-locking system -- since `prep publish` only ever runs
+    inside one Linux container on one host.
+
+    The marker file lives directly under `album_dir` (not under `.web/`)
+    so that acquiring it never creates `.web/` as a side effect -- hard
+    validation failures must still leave nothing written for the album.
+    """
+    lock_path = album_dir / PUBLISH_LOCK_FILENAME
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise PublishError(
+                f"{album_dir} is already being published by another "
+                f"`prep publish` process -- try again shortly."
+            ) from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
 def _publish_album(
@@ -543,30 +672,36 @@ def _publish_album(
                 f"{item.file}: no capture date metadata found; using file mtime"
             )
 
-    # --- Phase 2: asset generation (all-or-nothing) -------------------
-    _generate_assets_atomically(album_dir, media_items)
+    # Phases 2-4 touch disk for this album (and the site-wide index), so
+    # they're serialized per-album against any other concurrent `prep
+    # publish` of the same album -- see _album_publish_lock's docstring.
+    with _album_publish_lock(album_dir):
+        # --- Phase 2: asset generation (all-or-nothing) ---------------
+        _generate_assets_atomically(album_dir, media_items)
 
-    cover_items = pick_cover_thumbnails(media_items)
-    cover_filenames = _copy_covers(album_dir, site_root, album_rel_path, cover_items)
+        cover_items = pick_cover_thumbnails(media_items)
+        cover_filenames = _copy_covers(
+            album_dir, site_root, album_rel_path, cover_items
+        )
 
-    # --- Phase 3: rendering --------------------------------------------
-    album_info = AlbumInfo(path=album_dir, manifest=manifest)
-    render_album_page(album_info, album_dir)
-    render_picture_pages(album_info, album_dir)
+        # --- Phase 3: rendering ----------------------------------------
+        album_info = AlbumInfo(path=album_dir, manifest=manifest)
+        render_album_page(album_info, album_dir)
+        render_picture_pages(album_info, album_dir)
 
-    earliest_date = min(dates.values()) if dates else date.today()
-    summary = AlbumSummary(
-        album_path=album_rel_path,
-        title=manifest.title,
-        public=manifest.public,
-        earliest_date=earliest_date.isoformat(),
-        covers=cover_filenames,
-    )
-    write_album_summary(album_dir, summary)
+        earliest_date = min(dates.values()) if dates else date.today()
+        summary = AlbumSummary(
+            album_path=album_rel_path,
+            title=manifest.title,
+            public=manifest.public,
+            earliest_date=earliest_date.isoformat(),
+            covers=cover_filenames,
+        )
+        write_album_summary(album_dir, summary)
 
-    # --- Phase 4: site-wide refresh -------------------------------------
-    sync_shared_static(site_root)
-    render_albums_index(site_root, pictures_root)
+        # --- Phase 4: site-wide refresh ---------------------------------
+        sync_shared_static(site_root)
+        render_albums_index(site_root, pictures_root)
 
     return PublishResult(album_path=album_rel_path, warnings=warnings)
 

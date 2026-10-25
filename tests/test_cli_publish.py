@@ -307,6 +307,177 @@ def test_generate_assets_atomically_restores_preexisting_thumbnails_on_failure(
     assert leftover == []
 
 
+def test_generate_assets_atomically_preserves_backup_when_restore_also_fails(
+    tmp_path, monkeypatch
+):
+    """Regression test for iteration-3 review finding #1 (critical): if
+    the forward swap fails AND the automatic restore-back rename also
+    fails (plausible -- same root cause, e.g. disk full, can affect both
+    renames), the old `finally` block used to unconditionally delete
+    `backup_dir` -- the one remaining intact copy of the album's old
+    thumbnails -- causing total, permanent data loss. The fix must leave
+    `backup_dir` on disk, with the pre-run thumbnail bytes intact, and
+    raise a clear error naming its exact path instead."""
+    from prep.cli import BACKUP_DIR_PREFIX, ManifestItem, _generate_assets_atomically
+
+    album_dir = tmp_path / "album"
+    album_dir.mkdir()
+    shutil.copy(FIXTURES / "sample_with_exif.jpg", album_dir / "IMG_0001.jpg")
+    shutil.copy(FIXTURES / "sample_no_exif.jpg", album_dir / "IMG_0002.jpg")
+
+    media_items = [ManifestItem(file="IMG_0001.jpg"), ManifestItem(file="IMG_0002.jpg")]
+
+    # Simulate "already published once".
+    _generate_assets_atomically(album_dir, media_items)
+    thumbs_dir = album_dir / ".web" / "thumbs"
+    old_item1_bytes = (thumbs_dir / "IMG_0001.jpg.jpg").read_bytes()
+    old_item2_bytes = (thumbs_dir / "IMG_0002.jpg.jpg").read_bytes()
+
+    real_rename = Path.rename
+    call_count = {"n": 0}
+
+    def _doubly_flaky_rename(self, target):
+        call_count["n"] += 1
+        # Call 1: final_dir -> backup_dir -- let it succeed, so there's
+        # something to restore.
+        # Call 2: staging -> final_dir (the forward swap) -- fails.
+        # Call 3: backup_dir -> final_dir (the restore-back attempt) --
+        # ALSO fails, the scenario the prior rounds' fix never covered.
+        if call_count["n"] in (2, 3):
+            raise OSError("simulated rename failure")
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", _doubly_flaky_rename)
+
+    with pytest.raises(Exception) as excinfo:
+        _generate_assets_atomically(album_dir, media_items)
+
+    monkeypatch.setattr(Path, "rename", real_rename)
+
+    # A clear, specific error naming the recovery path, not a bare/
+    # swallowed OSError.
+    message = str(excinfo.value)
+    assert "backup" in message.lower() or str(album_dir) in message
+
+    # backup_dir must still exist on disk, holding the pre-run bytes
+    # intact -- NOT silently deleted by `finally`.
+    web_dir = album_dir / ".web"
+    backups = [p for p in web_dir.iterdir() if p.name.startswith(BACKUP_DIR_PREFIX)]
+    assert len(backups) == 1, f"expected exactly one surviving backup dir, got {backups}"
+    backup_dir = backups[0]
+    assert (backup_dir / "IMG_0001.jpg.jpg").read_bytes() == old_item1_bytes
+    assert (backup_dir / "IMG_0002.jpg.jpg").read_bytes() == old_item2_bytes
+
+    # The error message names this exact backup dir so an operator can
+    # recover manually.
+    assert str(backup_dir) in message
+
+
+def test_generate_assets_atomically_self_heals_orphaned_backup_when_final_dir_missing(
+    tmp_path, monkeypatch
+):
+    """Regression test for iteration-3 review finding #2: if a previous
+    run was killed between the two swap renames (final_dir missing, one
+    orphaned `.thumbs-backup-*` dir left holding the last valid
+    thumbnails), the next call must self-heal -- restore that backup into
+    final_dir's place -- before doing any of its own work, rather than
+    leaving the orphan to leak disk space forever with the album 404ing
+    on thumbnails in the meantime."""
+    from prep.cli import BACKUP_DIR_PREFIX, ManifestItem, _generate_assets_atomically
+
+    album_dir = tmp_path / "album"
+    album_dir.mkdir()
+    shutil.copy(FIXTURES / "sample_with_exif.jpg", album_dir / "IMG_0001.jpg")
+    media_items = [ManifestItem(file="IMG_0001.jpg")]
+
+    # Publish once successfully, so final_dir holds valid thumbnails.
+    _generate_assets_atomically(album_dir, media_items)
+    thumbs_dir = album_dir / ".web" / "thumbs"
+    old_bytes = (thumbs_dir / "IMG_0001.jpg.jpg").read_bytes()
+
+    # Simulate "process was killed mid-swap": this is exactly the on-disk
+    # state right after `final_dir.rename(backup_dir)` succeeded but
+    # before `staging.rename(final_dir)` ran -- final_dir missing, an
+    # orphaned backup dir sitting in its place.
+    web_dir = album_dir / ".web"
+    orphaned_backup = web_dir / f"{BACKUP_DIR_PREFIX}deadbeef"
+    thumbs_dir.rename(orphaned_backup)
+    assert not thumbs_dir.exists()
+
+    # Make this run's OWN generation fail immediately, so the self-heal's
+    # effect can be observed in isolation from whether this run's new
+    # thumbnails ever get swapped in (self-heal runs first, at the very
+    # top of the function, before any new work).
+    import prep.cli as cli_module
+
+    def _boom(*a, **kw):
+        raise RuntimeError("simulated failure, unrelated to the self-heal")
+
+    monkeypatch.setattr(cli_module, "generate_photo_thumbnail", _boom)
+
+    with pytest.raises(RuntimeError):
+        _generate_assets_atomically(album_dir, media_items)
+
+    assert thumbs_dir.is_dir()
+    assert (thumbs_dir / "IMG_0001.jpg.jpg").read_bytes() == old_bytes
+    assert not orphaned_backup.exists()
+
+
+def test_generate_assets_atomically_cleans_up_stale_orphaned_staging_dir(
+    tmp_path,
+):
+    """Regression test for iteration-3 review finding #3: a stale
+    `.thumbs-staging-*` dir left behind by a run that crashed during
+    generation (before any rename happened) must be cleaned up by the
+    next run's self-heal when final_dir is otherwise healthy, rather than
+    accumulating forever as a disk-space leak."""
+    from prep.cli import STAGING_DIR_PREFIX, ManifestItem, _generate_assets_atomically
+
+    album_dir = tmp_path / "album"
+    album_dir.mkdir()
+    shutil.copy(FIXTURES / "sample_with_exif.jpg", album_dir / "IMG_0001.jpg")
+    media_items = [ManifestItem(file="IMG_0001.jpg")]
+
+    _generate_assets_atomically(album_dir, media_items)
+    web_dir = album_dir / ".web"
+
+    stale_staging = web_dir / f"{STAGING_DIR_PREFIX}leftover"
+    stale_staging.mkdir()
+    (stale_staging / "junk.jpg.jpg").write_bytes(b"half-written garbage")
+
+    # final_dir exists normally here -- this stale staging dir is simply
+    # a leftover from an unrelated crashed run, safe to discard outright.
+    _generate_assets_atomically(album_dir, media_items)
+
+    assert not stale_staging.exists()
+
+
+def test_album_publish_lock_raises_clear_error_when_already_held(tmp_path):
+    """Regression test for iteration-3 review finding #4: a second
+    attempt to acquire the per-album publish lock while it's already
+    held (e.g. a concurrent `prep publish` of the same album) must raise
+    a clear, specific error rather than silently proceeding into the
+    directory-swap race that can trigger finding #1's failure mode."""
+    import fcntl
+    import os
+
+    from prep.cli import PublishError, _album_publish_lock
+
+    album_dir = tmp_path / "album"
+    album_dir.mkdir()
+
+    lock_path = album_dir / ".prep-publish.lock"
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        with pytest.raises(PublishError, match="already being published"):
+            with _album_publish_lock(album_dir):
+                pass
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
 def test_publish_album_with_only_notes_falls_back_to_todays_date(tmp_path, monkeypatch):
     """An album whose items are all notes (no photos/videos at all) has no
     item date to derive earliest_date from -- _publish_album must fall back
