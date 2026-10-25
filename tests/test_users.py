@@ -8,11 +8,14 @@ from click.testing import CliRunner
 
 import prep.cli as cli_module
 from prep.cli import cli
+from prep.caddyconfig import CADDYFILE_FILENAME
+from prep.manifest import load_manifest
 from prep.users import (
     UserError,
     add_user,
     hash_password,
     load_users,
+    remove_user,
     save_users,
     update_password,
 )
@@ -115,6 +118,19 @@ def test_update_password_unknown_user_raises():
         update_password(data, "nobody", "whatever")
 
 
+def test_remove_user_success():
+    data = {}
+    add_user(data, "alice", "s3cret")
+    remove_user(data, "alice")
+    assert "alice" not in data
+
+
+def test_remove_user_unknown_user_raises():
+    data = {}
+    with pytest.raises(UserError):
+        remove_user(data, "nobody")
+
+
 def test_cli_users_add_creates_user(tmp_path, monkeypatch):
     users_path = tmp_path / "users.yml"
     result = _invoke_users(
@@ -179,6 +195,83 @@ def test_cli_users_passwd_unknown_user_errors(tmp_path, monkeypatch):
         tmp_path,
         ["users", "passwd", "nobody", "--users-file", str(users_path)],
         input="new-pass\nnew-pass\n",
+    )
+    assert result.exit_code != 0
+    assert "does not exist" in result.output
+
+
+def test_cli_users_delete_removes_user_from_users_yml_manifests_and_caddyfile(
+    tmp_path, monkeypatch
+):
+    from prep.render import AlbumSummary, write_album_summary
+
+    users_path = tmp_path / "users.yml"
+
+    _invoke_users(
+        monkeypatch,
+        tmp_path,
+        ["users", "add", "alice", "--users-file", str(users_path)],
+        input="s3cret\ns3cret\n",
+    )
+    _invoke_users(
+        monkeypatch,
+        tmp_path,
+        ["users", "add", "bob", "--users-file", str(users_path)],
+        input="s3cret\ns3cret\n",
+    )
+
+    # _invoke_users always points --pictures-root at tmp_path / "pictures" --
+    # build a published album manifest there listing both users, so this
+    # test can assert the manifest AND the regenerated Caddyfile both
+    # reflect alice's removal.
+    pictures_root = tmp_path / "pictures"
+    album_dir = pictures_root / "2024" / "Trip"
+    album_dir.mkdir(parents=True)
+    (album_dir / "publish.yaml").write_text(
+        "# curated jointly\n"
+        "title: Trip\n"
+        "public: false\n"
+        "allowed_users: [alice, bob]\n"
+    )
+    write_album_summary(
+        album_dir,
+        AlbumSummary(
+            album_path="2024/Trip",
+            title="Trip",
+            public=False,
+            earliest_date="2024-01-01",
+            covers=[],
+        ),
+    )
+
+    result = _invoke_users(
+        monkeypatch,
+        tmp_path,
+        ["users", "delete", "alice", "--users-file", str(users_path)],
+    )
+    assert result.exit_code == 0, result.output
+    assert "reloaded Caddy (stub)" in result.output
+    assert str(album_dir) in result.output
+
+    data = load_users(users_path)
+    assert "alice" not in data
+    assert "bob" in data
+
+    manifest = load_manifest(album_dir)
+    assert manifest.allowed_users == ["bob"]
+    # Comment on the touched manifest must survive the round-trip edit.
+    assert (album_dir / "publish.yaml").read_text().startswith("# curated jointly\n")
+
+    caddyfile_content = (tmp_path / "caddy" / CADDYFILE_FILENAME).read_text()
+    assert "alice" not in caddyfile_content
+
+
+def test_cli_users_delete_unknown_user_errors(tmp_path, monkeypatch):
+    users_path = tmp_path / "users.yml"
+    result = _invoke_users(
+        monkeypatch,
+        tmp_path,
+        ["users", "delete", "nobody", "--users-file", str(users_path)],
     )
     assert result.exit_code != 0
     assert "does not exist" in result.output

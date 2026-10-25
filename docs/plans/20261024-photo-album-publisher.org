@@ -512,19 +512,21 @@ can't simulate.
 - ➕ =prep users add=/=prep users passwd= gained the same =--pictures-root=/=--site-root=/=--caddy-dir=/=--domain=/=--acme-email= options as =publish=/=sync-routes= (via a shared =_caddy_sync_options= decorator in =prep/cli.py=), since they now also need a pictures root to discover published albums for the Caddyfile regen step; =tests/test_users.py='s CLI-level tests were updated to pass =--pictures-root=/=--caddy-dir= pointing at tmp dirs and to stub =reload_caddy= accordingly (otherwise they'd have started writing into the real repo's =caddy/= directory on every test run). =tests/test_cli_publish.py='s =_invoke_publish= helper was similarly updated to pass =--caddy-dir= and stub =reload_caddy=.
 - ⚠️ no real Caddy binary or container exists in this sandbox (confirmed: no =caddy= executable, no =docker-compose.yml= yet — that's Task 17), so =reload_caddy()='s real =docker compose exec caddy ...= path is only exercised via mocked =subprocess.run= in =tests/test_caddyconfig.py=; its "container not running" graceful-skip branch was manually verified for real against the actual =docker= binary installed in this sandbox (which has no compose project here), confirming it returns a clean skip message rather than hanging or crashing.
 
-*** TODO Task 13: =prep users delete= with manifest cleanup and immediate revocation
+*** DONE Task 13: =prep users delete= with manifest cleanup and immediate revocation
 
 *Files:*
 - Modify: =prep/cli.py=
 - Modify: =prep/manifest.py=
 - Modify: =tests/test_users.py=
 
-- [ ] implement =remove_user_from_manifests(username, pictures_root)= in =prep/manifest.py=: walk every album's =publish.yaml=, strip the username from =allowed_users= where present, save via =ruamel.yaml=, return the list of touched album paths
-- [ ] implement =prep users delete <username>= in =prep/cli.py=: remove from =users.yml=, call =remove_user_from_manifests=, print which albums were touched, then automatically run the same Caddyfile-regeneration+reload path as =sync-routes= (task 12) so access is revoked immediately
-- [ ] error clearly if the username doesn't exist in =users.yml=
-- [ ] write tests for =remove_user_from_manifests= (removed from albums that listed it, untouched albums unaffected, comments/formatting preserved)
-- [ ] write a test for =prep users delete= end-to-end against a fixture tree, asserting =users.yml=, the touched manifests, and the regenerated Caddyfile all reflect the removal
-- [ ] run tests — must pass before task 14
+- [X] implement =remove_user_from_manifests(username, pictures_root)= in =prep/manifest.py=: walk every album's =publish.yaml=, strip the username from =allowed_users= where present, save via =ruamel.yaml=, return the list of touched album paths
+- [X] implement =prep users delete <username>= in =prep/cli.py=: remove from =users.yml=, call =remove_user_from_manifests=, print which albums were touched, then automatically run the same Caddyfile-regeneration+reload path as =sync-routes= (task 12) so access is revoked immediately
+- [X] error clearly if the username doesn't exist in =users.yml=
+- [X] write tests for =remove_user_from_manifests= (removed from albums that listed it, untouched albums unaffected, comments/formatting preserved)
+- [X] write a test for =prep users delete= end-to-end against a fixture tree, asserting =users.yml=, the touched manifests, and the regenerated Caddyfile all reflect the removal
+- [X] run tests — must pass before task 14
+- ➕ added =remove_user(data, username)= to =prep/users.py= (not explicitly listed in this task's Files, but needed for the same "error clearly if unknown" behavior =add_user=/=update_password= already provide, following that exact pattern) and a matching =test_remove_user_success=/=test_remove_user_unknown_user_raises= pair in =tests/test_users.py=
+- ➕ =remove_user_from_manifests='s tests landed in =tests/test_manifest.py= (alongside the rest of =prep/manifest.py='s tests) rather than =tests/test_users.py=, since that's where the function itself lives; the end-to-end CLI test (=prep users delete= through the full users.yml + manifest + Caddyfile pipeline) is in =tests/test_users.py= as the plan's Files list specifies
 
 *** TODO Task 14: Album page JS (scroll buttons, swipe, note sizing)
 

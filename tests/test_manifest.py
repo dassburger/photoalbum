@@ -12,6 +12,7 @@ from prep.manifest import (
     ManifestError,
     discover_albums,
     load_manifest,
+    remove_user_from_manifests,
     validate_manifest,
 )
 
@@ -199,3 +200,63 @@ def test_discover_albums_empty_root_returns_empty_list(tmp_path):
     root = tmp_path / "Pictures"
     root.mkdir()
     assert discover_albums(root) == []
+
+
+# -- remove_user_from_manifests ---------------------------------------------
+
+
+def test_remove_user_from_manifests_strips_from_listed_albums_only(tmp_path):
+    root = tmp_path / "Pictures"
+    root.mkdir()
+
+    album_a = root / "2024" / "Trip"
+    album_a.mkdir(parents=True)
+    (album_a / "publish.yaml").write_text(
+        "# curated by alice\n"
+        "title: Trip\n"
+        "allowed_users: [alice, bob]\n"
+    )
+
+    album_b = root / "2023" / "Reunion"
+    album_b.mkdir(parents=True)
+    (album_b / "publish.yaml").write_text(
+        "title: Reunion\nallowed_users: [bob]\n"
+    )
+
+    touched = remove_user_from_manifests("alice", root)
+
+    assert touched == [album_a]
+
+    manifest_a = load_manifest(album_a)
+    assert manifest_a.allowed_users == ["bob"]
+    # Comment and formatting on the touched file must survive the edit.
+    assert (album_a / "publish.yaml").read_text().startswith("# curated by alice\n")
+
+    # Untouched album's file must be byte-for-byte unchanged.
+    manifest_b = load_manifest(album_b)
+    assert manifest_b.allowed_users == ["bob"]
+
+
+def test_remove_user_from_manifests_no_matches_returns_empty_list(tmp_path):
+    root = tmp_path / "Pictures"
+    root.mkdir()
+    album = root / "Album"
+    album.mkdir()
+    (album / "publish.yaml").write_text("allowed_users: [bob]\n")
+
+    touched = remove_user_from_manifests("alice", root)
+
+    assert touched == []
+    assert load_manifest(album).allowed_users == ["bob"]
+
+
+def test_remove_user_from_manifests_skips_work_dir(tmp_path):
+    root = tmp_path / "Pictures"
+    root.mkdir()
+    bogus = root / "Album" / "work"
+    bogus.mkdir(parents=True)
+    (bogus / "publish.yaml").write_text("allowed_users: [alice]\n")
+
+    touched = remove_user_from_manifests("alice", root)
+
+    assert touched == []

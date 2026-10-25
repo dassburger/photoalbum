@@ -61,3 +61,13 @@ def update_password(data, username: str, plaintext: str) -> None:
     if username not in data:
         raise UserError(f"user {username!r} does not exist")
     data[username] = hash_password(plaintext)
+
+
+def remove_user(data, username: str) -> None:
+    """Remove a user from the in-memory users mapping.
+
+    Raises UserError if the username doesn't exist.
+    """
+    if username not in data:
+        raise UserError(f"user {username!r} does not exist")
+    del data[username]

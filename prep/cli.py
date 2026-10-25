@@ -34,6 +34,7 @@ from prep.manifest import (
     ManifestItem,
     discover_albums,
     load_manifest,
+    remove_user_from_manifests,
     validate_manifest,
 )
 from prep.metadata import VIDEO_EXTENSIONS, get_item_date
@@ -52,6 +53,7 @@ from prep.users import (
     add_user,
     hash_password,
     load_users,
+    remove_user,
     save_users,
     update_password,
 )
@@ -309,6 +311,61 @@ def users_passwd(
         raise click.ClickException(str(exc)) from exc
     save_users(users_path, data)
     click.echo(f"Updated password for {username!r}.")
+
+    _sync_caddy_after_user_change(
+        pictures_root, site_root, caddy_dir, domain, acme_email, users_path
+    )
+
+
+@users_group.command("delete")
+@click.argument("username")
+@_caddy_sync_options
+@click.option(
+    "--users-file",
+    "users_path",
+    default=str(DEFAULT_USERS_PATH),
+    show_default=True,
+    type=click.Path(path_type=Path),
+    help="Path to users.yml.",
+)
+def users_delete(
+    username: str,
+    pictures_root: Path | None,
+    site_root: Path,
+    caddy_dir: Path,
+    domain: str | None,
+    acme_email: str | None,
+    users_path: Path,
+):
+    """Remove a user: from users.yml, from every album's allowed_users, and
+    from the live Caddyfile -- revoking their access immediately.
+
+    Errors clearly (without touching anything) if the username isn't in
+    users.yml. Otherwise: deletes it from users.yml, strips it from every
+    album manifest's allowed_users (task 13's remove_user_from_manifests,
+    printing which albums were touched), then runs the same Caddyfile
+    regeneration+reload path `sync-routes` uses so the deleted user's
+    basic_auth credentials stop working immediately -- the same
+    immediate-revocation guarantee `users passwd` already provides.
+    """
+    data = load_users(users_path)
+    try:
+        remove_user(data, username)
+    except UserError as exc:
+        raise click.ClickException(str(exc)) from exc
+    save_users(users_path, data)
+    click.echo(f"Removed user {username!r}.")
+
+    if pictures_root is None:
+        pictures_root = _default_pictures_root()
+
+    touched = remove_user_from_manifests(username, Path(pictures_root))
+    if touched:
+        click.echo(f"Removed {username!r} from {len(touched)} album manifest(s):")
+        for album_dir in touched:
+            click.echo(f"  - {album_dir}")
+    else:
+        click.echo(f"{username!r} was not listed in any album's allowed_users.")
 
     _sync_caddy_after_user_change(
         pictures_root, site_root, caddy_dir, domain, acme_email, users_path

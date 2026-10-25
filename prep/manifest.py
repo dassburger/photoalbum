@@ -185,6 +185,48 @@ class AlbumInfo:
     manifest: Manifest
 
 
+def remove_user_from_manifests(username: str, pictures_root: str | Path) -> list[Path]:
+    """Strip `username` from every album's allowed_users list where present.
+
+    Walks every publish.yaml under pictures_root (same "skip anything under
+    work/" rule discover_albums uses), and for each one that lists
+    `username` in allowed_users, removes it and saves the file back via
+    ruamel.yaml round-trip mode (preserving comments/formatting/order of
+    everything else). Albums that don't list `username` at all are left
+    completely untouched (not even re-saved), so an unrelated album's
+    formatting never churns.
+
+    Returns the list of album directories actually touched, for `prep
+    users delete` (task 13) to report back to the operator -- this is also
+    why access revocation is immediate: an album whose private
+    basic_auth-protected ACL no longer lists a deleted user has that
+    reflected the next time the Caddyfile is regenerated (the same
+    sync_caddy_routes() step `users delete` runs right after calling this).
+    """
+    pictures_root = Path(pictures_root)
+    touched: list[Path] = []
+    for manifest_path in sorted(pictures_root.rglob(MANIFEST_FILENAME)):
+        relative_parts = manifest_path.relative_to(pictures_root).parts[:-1]
+        if WORK_DIRNAME in relative_parts:
+            continue
+
+        with manifest_path.open("r") as f:
+            data = _yaml.load(f)
+        if data is None:
+            continue
+
+        allowed_users = data.get("allowed_users")
+        if not allowed_users or username not in allowed_users:
+            continue
+
+        allowed_users.remove(username)
+        with manifest_path.open("w") as f:
+            _yaml.dump(data, f)
+        touched.append(manifest_path.parent)
+
+    return touched
+
+
 def discover_albums(pictures_root: str | Path) -> list[AlbumInfo]:
     """Walk pictures_root for every publish.yaml, returning path+manifest pairs.
 
