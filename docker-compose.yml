@@ -1,0 +1,91 @@
+# Two services: `caddy` (the only continuously-running container, started by
+# `docker compose up`) and `prep` (built but never started by `docker
+# compose up` -- invoked ad hoc only via `docker compose run --rm prep
+# <args>`, see prep/Dockerfile and the plan's Task 16/17).
+#
+# Host paths and ports are overridable via environment variables (or a
+# local .env file, gitignored) so this file is safe to use as-is for real
+# deployment while still being safe to point at a throwaway directory and
+# non-standard ports for local verification:
+#
+#   PICTURES_ROOT    - host path to the photo archive, bind-mounted into
+#                       both containers at /pictures. Defaults to this
+#                       host's real ~/Pictures. For a throwaway local
+#                       verification run, override it, e.g.:
+#                         PICTURES_ROOT=/tmp/fixture-pictures docker compose ...
+#   CADDY_HTTP_PORT   - host port published for Caddy's HTTP listener
+#                       (defaults to the standard 80).
+#   CADDY_HTTPS_PORT  - host port published for Caddy's HTTPS listener
+#                       (defaults to the standard 443).
+#
+# Note: Compose variable substitution does not do shell `~` expansion (and
+# nested `${VAR:-${OTHER}}` defaults aren't reliably supported across
+# Compose implementations/versions either), so the default below is this
+# machine's real, absolute `~/Pictures` path spelled out directly, rather
+# than `~/Pictures` or `${HOME}/Pictures`. This is a personal, single-host
+# tool (see the plan's Solution Overview), so a hardcoded default for the
+# one real host it runs on is appropriate -- PICTURES_ROOT still overrides
+# it for any other host or for a throwaway local verification run.
+
+services:
+  caddy:
+    image: caddy:2.8.4-alpine # must match prep/caddyconfig.py's CADDY_IMAGE
+    restart: unless-stopped
+    ports:
+      - "${CADDY_HTTP_PORT:-80}:80"
+      - "${CADDY_HTTPS_PORT:-443}:443"
+    volumes:
+      # Real ~/Pictures tree, read-only -- Caddy only ever serves it, never
+      # writes to it. Same container path (`/pictures`) the `prep` service
+      # below uses, so generated Caddyfile `root` paths are consistent to
+      # reason about.
+      - "${PICTURES_ROOT:-/home/pk/Pictures}:/pictures:ro"
+      # Site-wide generated output (top-level index.html, static/,
+      # .covers/) -- read-only here too. Mounted at the same absolute path
+      # (/app/site) the `prep` service's own default --site-root resolves
+      # to (its working directory is /app -- see prep/Dockerfile's
+      # WORKDIR), since that absolute path is baked literally into the
+      # `root *` directives `generate_caddyfile` writes (see Task 12) and
+      # so must resolve to the same content inside *both* containers.
+      - "./site:/app/site:ro"
+      # The directory `prep sync-routes`/`prep publish` write the generated
+      # Caddyfile into (not the bare file itself, so prep's atomic
+      # temp-file-plus-rename never leaves this container holding a stale
+      # inode -- see Task 12).
+      - "./caddy:/etc/caddy"
+      # Let's Encrypt certificate/account state and Caddy's own autosaved
+      # config, persisted across container recreation.
+      - "caddy_data:/data"
+      - "caddy_config:/config"
+
+  prep:
+    build:
+      context: .
+      dockerfile: prep/Dockerfile
+    # Not part of `docker compose up` -- this service only ever runs via
+    # `docker compose run --rm prep <args>` (see prep/Dockerfile's header
+    # comment and the plan's Solution Overview). The "tools" profile keeps
+    # it out of the default `up`/`start` service set; `docker compose run`
+    # explicitly names the service and starts it regardless of profile.
+    profiles:
+      - tools
+    volumes:
+      # Read-write: `prep` generates thumbnails/HTML directly inside each
+      # album folder here. Same container path as the `caddy` service's
+      # mount above.
+      - "${PICTURES_ROOT:-/home/pk/Pictures}:/pictures"
+      - "./site:/app/site"
+      - "./caddy:/app/caddy"
+      # The project repo itself, read-write, so `prep` (which resolves
+      # `users.yml`/`prep.toml` and its `--site-root`/`--caddy-dir`
+      # defaults relative to its working directory, /app) can read/edit
+      # `users.yml` and read `prep.toml`. This also makes the `./site` and
+      # `./caddy` mounts above redundant in practice (both are already
+      # subdirectories of this same repo checkout) -- they're kept as
+      # explicit separate mounts for clarity about exactly what `prep`
+      # reads/writes, matching the plan's Task 17 description.
+      - ".:/app"
+
+volumes:
+  caddy_data:
+  caddy_config:

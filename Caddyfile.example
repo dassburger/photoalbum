@@ -1,0 +1,78 @@
+# Checked-in REFERENCE ONLY -- not read by Caddy and not machine-generated.
+# The real Caddyfile is produced by `prep.caddyconfig.generate_caddyfile()`
+# (`prep sync-routes` / `prep publish`, see Task 12) and written into the
+# `caddy/` directory (gitignored), which this project's docker-compose.yml
+# mounts at /etc/caddy inside the `caddy` container.
+#
+# This file shows the exact shape that generator produces for a domain with
+# two published albums: one public ("2024/summer-trip") and one private
+# ("2024/family-reunion", restricted to users alice and bob). Real
+# `allowed_users ∩ users.yml` bcrypt hashes are substituted in below with
+# obviously-fake example values.
+#
+# Both `prep` and `caddy` mount the real photo archive at the same
+# container path (/pictures here) -- see docker-compose.yml -- so each
+# album's `root` below is just /pictures/<album-path>.
+
+photos.example.com {
+    tls you@example.com
+
+    # Unauthenticated: the site-wide static assets (shared CSS/JS) synced
+    # by `prep publish` into site/static/.
+    handle /static/* {
+        root * /site
+        file_server
+    }
+
+    # Unauthenticated: public cover thumbnails for every album (including
+    # private ones -- see the plan's "Index privacy tradeoff") copied by
+    # `prep publish` into site/.covers/, so the albums index can render
+    # every album's title + covers without requiring login first.
+    handle /.covers/* {
+        root * /site
+        file_server
+    }
+
+    # One handle_path block per published album, sorted by path. Each is
+    # wrapped in an explicit route {} so the work/publish.yaml exclusion
+    # below always runs before file_server, regardless of Caddy's own
+    # default directive ordering -- see the plan's Solution Overview ("Why
+    # serve ~/Pictures directly, with no symlink mirror").
+
+    # -- Private album: wrapped in basic_auth, listing exactly this
+    # album's allowed_users intersected with users.yml. No other album's
+    # credentials appear in this block.
+    handle_path "/2024/family-reunion/*" {
+        root * /pictures/2024/family-reunion
+        route {
+            basic_auth {
+                alice $2y$10$exampleexamplehashforaliceexamplehash
+                bob $2y$10$exampleexamplehashforbobexamplehashexa
+            }
+            # `work/` (any nested depth) and `publish.yaml` are never
+            # web-reachable, even by direct URL guess -- a `path` matcher
+            # is case-insensitive (unlike file_server's `hide`), so this
+            # also blocks a mismatched-case request like /Work/ or /WORK/.
+            @excluded path /work/* /publish.yaml
+            respond @excluded 404
+            file_server
+        }
+    }
+
+    # -- Public album: identical shape, but no basic_auth wrapper at all.
+    handle_path "/2024/summer-trip/*" {
+        root * /pictures/2024/summer-trip
+        route {
+            @excluded path /work/* /publish.yaml
+            respond @excluded 404
+            file_server
+        }
+    }
+
+    # Catch-all: the albums index itself (site/index.html) and anything
+    # else not matched above -- also unauthenticated.
+    handle {
+        root * /site
+        file_server
+    }
+}

@@ -10,6 +10,10 @@ site_domain = "photos.example.com"
 # Email address Let's Encrypt uses for expiry/revocation notices.
 acme_email = "you@example.com"
 
-# Absolute path to the root of the photo archive (mounted into the prep and
-# caddy containers), e.g. "/home/you/Pictures".
-pictures_root = "/home/you/Pictures"
+# Path to the root of the photo archive, as `prep` itself sees it. Since
+# `prep` only ever runs inside its own container (see prep/Dockerfile), this
+# is the *container-internal* mount path from docker-compose.yml -- the
+# same path the `caddy` service mounts the real archive at -- not the real
+# host-side absolute path (that's docker-compose.yml's PICTURES_ROOT
+# environment variable instead; see its comments).
+pictures_root = "/pictures"
