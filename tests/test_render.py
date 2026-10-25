@@ -16,7 +16,9 @@ from prep.manifest import AlbumInfo, Manifest, ManifestItem
 from prep.render import (
     COVERS_DIRNAME,
     STATIC_DIRNAME,
+    STATIC_STAGING_PREFIX,
     AlbumSummary,
+    RenderError,
     load_album_summary,
     picture_page_filename,
     render_album_page,
@@ -196,8 +198,6 @@ def test_sync_shared_static_retries_forward_swap_instead_of_silently_discarding_
     (identified by the staging-dir prefix as the source and `dest` as
     the target) at least twice, not stop at one.
     """
-    import prep.render as render_module
-
     site_root = tmp_path / "site"
     # Establish a REAL pre-existing dest via a normal successful sync --
     # the "already published once" refresh case this bug is specific to
@@ -208,7 +208,7 @@ def test_sync_shared_static_retries_forward_swap_instead_of_silently_discarding_
     assert old_content
 
     real_rename = Path.rename
-    staging_prefix = render_module._STATIC_STAGING_PREFIX
+    staging_prefix = STATIC_STAGING_PREFIX
     forward_swap_calls = {"count": 0}
 
     def flaky_rename(self: Path, target):
@@ -241,18 +241,16 @@ def test_sync_shared_static_raises_loudly_on_refresh_when_forward_swap_never_suc
 ):
     """Companion to the test above: when the forward swap fails on EVERY
     attempt (retry budget exhausted) during a refresh, the function must
-    raise a clear RuntimeError -- not silently return success -- and
+    raise a clear RenderError -- not silently return success -- and
     must leave `dest` holding its restored-stopgap (old, valid) content
     rather than nothing at all, per its own documented contract.
     """
-    import prep.render as render_module
-
     site_root = tmp_path / "site"
     dest = sync_shared_static(site_root)
     old_content = (dest / "base.css").read_text()
 
     real_rename = Path.rename
-    staging_prefix = render_module._STATIC_STAGING_PREFIX
+    staging_prefix = STATIC_STAGING_PREFIX
 
     def always_fail_forward_swap(self: Path, target):
         target_path = Path(target)
@@ -262,7 +260,7 @@ def test_sync_shared_static_raises_loudly_on_refresh_when_forward_swap_never_suc
 
     monkeypatch.setattr(Path, "rename", always_fail_forward_swap)
 
-    with pytest.raises(RuntimeError, match="failed to refresh shared static assets"):
+    with pytest.raises(RenderError, match="failed to refresh shared static assets"):
         sync_shared_static(site_root)
 
     assert dest.is_dir(), "site must not be left with no static/ at all"

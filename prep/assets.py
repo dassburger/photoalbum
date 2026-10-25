@@ -10,7 +10,6 @@ generated files are still wanted.
 
 from __future__ import annotations
 
-import logging
 import shutil
 import subprocess
 from pathlib import Path
@@ -20,8 +19,6 @@ from PIL import Image, ImageOps
 
 from prep.atomic import atomic_write
 from prep.manifest import ManifestItem
-
-logger = logging.getLogger(__name__)
 
 # Fixed subdirectory (relative to an album's own folder) that generated
 # thumbnails/poster-frames are written into — never configurable, matching

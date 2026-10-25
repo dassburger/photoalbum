@@ -27,6 +27,19 @@ _FFPROBE_TIME_FORMATS = (
 )
 
 
+def is_video(filename: str) -> bool:
+    """True if `filename`'s extension is one of VIDEO_EXTENSIONS.
+
+    The single shared "is this a video" check -- prep/cli.py and
+    prep/render.py each used to inline this same
+    `Path(...).suffix.lower() in VIDEO_EXTENSIONS` expression (3 copies
+    total); this module already owns VIDEO_EXTENSIONS/PHOTO_EXTENSIONS and
+    the extension-based dispatch in get_item_date, so it's the natural
+    single home for this check too (see code smells review finding #2).
+    """
+    return Path(filename).suffix.lower() in VIDEO_EXTENSIONS
+
+
 def _mtime_date(path: Path) -> datetime:
     """Return a file's mtime as a naive local datetime."""
     return datetime.fromtimestamp(path.stat().st_mtime)

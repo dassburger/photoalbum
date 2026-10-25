@@ -591,3 +591,62 @@ def test_publish_end_to_end_with_video_item(tmp_path, monkeypatch):
     picture_page = (album_dir / "picture" / "VID_0001.html").read_text()
     assert "VID_0001.mp4" in picture_page
     assert "video" in picture_page.lower()
+
+
+def test_publish_surfaces_static_swap_failure_as_clean_error_not_traceback(
+    tmp_path, monkeypatch
+):
+    """Regression test (code smells review finding #1): both
+    `_generate_assets_atomically`'s double-rename-failure path and
+    `sync_shared_static`'s "every retry failed" path used to raise a bare
+    `RuntimeError`, which `publish()`'s except clause (ManifestError,
+    AssetError, PublishError) did NOT catch -- an operator invoking the
+    real `prep publish` CLI would see a raw Python traceback instead of
+    the clean, specific `Error: ...` message those failure paths were
+    written to show. Forces every attempt of sync_shared_static's
+    forward-swap retry loop to fail during a real end-to-end `prep
+    publish` CLI invocation (via CliRunner, same pattern as every other
+    test in this file) and asserts the result is a clean, non-zero-exit
+    click.ClickException -- not an uncaught RenderError/RuntimeError
+    surfaced as a traceback."""
+    import prep.render as render_module
+
+    pictures_root = tmp_path / "pictures"
+    pictures_root.mkdir()
+    album_dir = _build_album(pictures_root)
+
+    site_root = tmp_path / "site"
+    users_path = tmp_path / "users.yml"
+
+    # Pre-populate site_root/static/ via a real prior sync, so this run is
+    # a "refresh" (the exact steady-state case the forward-swap retry loop
+    # guards -- see test_render.py's companion unit tests).
+    dest = render_module.sync_shared_static(site_root)
+
+    real_rename = Path.rename
+    staging_prefix = render_module.STATIC_STAGING_PREFIX
+
+    def always_fail_forward_swap(self: Path, target):
+        target_path = Path(target)
+        if self.name.startswith(staging_prefix) and target_path == dest:
+            raise OSError("simulated persistent forward-swap failure")
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", always_fail_forward_swap)
+
+    result = _invoke_publish(monkeypatch, album_dir, pictures_root, site_root, users_path)
+
+    assert result.exit_code != 0
+    # click's own ClickException handling is what prints the clean
+    # "Error: ..." line and exits via SystemExit; an *uncaught* RenderError
+    # propagating past `publish()`'s except clause (the bug this test
+    # guards against) would instead surface here as that raw exception
+    # type, with no "Error: ..." line ever printed.
+    assert isinstance(result.exception, SystemExit), (
+        f"expected click's clean ClickException handling (surfaced by "
+        f"CliRunner as a SystemExit), got {result.exception!r} instead -- "
+        "the operator would see a raw traceback rather than the intended "
+        "clean error message"
+    )
+    assert "Error:" in result.output
+    assert "failed to refresh shared static assets" in result.output

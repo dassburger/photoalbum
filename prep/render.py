@@ -22,7 +22,17 @@ from prep.assets import THUMBS_DIRNAME, thumbnail_filename, thumbnail_path
 from prep.atomic import atomic_write_text
 from prep.layout import compute_grid_positions, group_by_day
 from prep.manifest import AlbumInfo, ManifestItem, discover_albums
-from prep.metadata import VIDEO_EXTENSIONS, get_item_date
+from prep.metadata import get_item_date, is_video
+
+
+class RenderError(Exception):
+    """Raised for `prep/render.py` hard-failures (e.g. sync_shared_static
+    exhausting its swap-retry budget), following the same per-module
+    exception-class pattern as ManifestError (prep/manifest.py) and
+    AssetError (prep/assets.py) -- so `prep publish`'s CLI layer can catch
+    it by name alongside those, without prep/render.py importing
+    prep/cli.py's PublishError (which would create a circular import: cli.py
+    already imports from render.py)."""
 
 # Fixed subdirectory (relative to the site root) that shared static assets
 # are synced into. Pages reference these via the absolute "/static/..."
@@ -215,10 +225,10 @@ def _grid_rows_for_template(entries) -> list[dict]:
             )
             continue
 
-        is_video = Path(item.file).suffix.lower() in VIDEO_EXTENSIONS
+        item_is_video = is_video(item.file)
         rows.append(
             {
-                "kind": "video" if is_video else "photo",
+                "kind": "video" if item_is_video else "photo",
                 "file": item.file,
                 # Relative to the generated index.html, which lives
                 # directly in the album folder alongside .web/thumbs/.
@@ -320,13 +330,13 @@ def render_picture_pages(album_info: AlbumInfo, album_dir: str | Path) -> list[P
         prev_item = media_items[index - 1] if index > 0 else None
         next_item = media_items[index + 1] if index + 1 < len(media_items) else None
 
-        is_video = Path(item.file).suffix.lower() in VIDEO_EXTENSIONS
+        item_is_video = is_video(item.file)
         mime_type, _ = mimetypes.guess_type(item.file)
 
         html = _env.get_template("picture_view.html").render(
             title=manifest.title,
             file=item.file,
-            is_video=is_video,
+            is_video=item_is_video,
             mime_type=mime_type,
             prev_href=picture_page_filename(prev_item.file) if prev_item else None,
             next_href=picture_page_filename(next_item.file) if next_item else None,
@@ -344,9 +354,102 @@ def render_picture_pages(album_info: AlbumInfo, album_dir: str | Path) -> list[P
     return written
 
 
-_STATIC_STAGING_PREFIX = ".static-staging-"
-_STATIC_BACKUP_PREFIX = ".static-backup-"
-_STATIC_SWAP_MAX_ATTEMPTS = 25
+# No leading underscore -- tests import these directly (see
+# tests/test_render.py), matching prep/cli.py's existing convention for its
+# own swap-related constants (BACKUP_DIR_PREFIX/STAGING_DIR_PREFIX) rather
+# than this module's previous underscore-prefixed-plus-module-qualified-
+# access convention (code smells review finding #3's naming-consistency
+# half).
+STATIC_STAGING_PREFIX = ".static-staging-"
+STATIC_BACKUP_PREFIX = ".static-backup-"
+STATIC_SWAP_MAX_ATTEMPTS = 25
+
+# Delay between retry attempts of the directory swap below -- named rather
+# than an inline magic number, matching the project's habit of naming every
+# tunable constant.
+STATIC_SWAP_RETRY_DELAY_SECONDS = 0.01
+
+
+@dataclass
+class _StaticSwapAttempt:
+    """Outcome of one _attempt_static_swap call.
+
+    `backup`, when set, is a backup directory still sitting on disk that
+    the caller must keep tracking (for eventual cleanup-on-success or
+    restore-on-total-failure) -- None means either nothing needed
+    preserving (dest didn't exist yet) or this attempt already restored
+    it back onto `dest` itself as a stopgap, so the caller has nothing
+    left to track for this attempt.
+    """
+
+    succeeded: bool
+    backup: Path | None
+    error: Exception | None
+
+
+def _attempt_static_swap(staging: Path, dest: Path) -> _StaticSwapAttempt:
+    """One attempt at atomically swapping `staging` into `dest`'s place
+    (two renames: move any existing `dest` aside to a fresh backup
+    directory, then move `staging` into `dest`'s place).
+
+    Extracted out of sync_shared_static's retry loop (see code smells
+    review finding #4) so the loop itself reads as a simple "try until
+    succeeded or attempts exhausted" shell -- all the per-attempt
+    concurrency reasoning (a concurrent sync_shared_static call racing the
+    same two renames) lives here instead. See sync_shared_static's own
+    docstring for why this needs to tolerate that concurrency at all.
+    """
+    backup = dest.parent / f"{STATIC_BACKUP_PREFIX}{uuid.uuid4().hex}"
+    attempted_forward_swap = False
+    try:
+        try:
+            dest.rename(backup)
+        except FileNotFoundError:
+            # No previous static/ to preserve: either this is the very
+            # first sync, or a concurrent call already moved it aside.
+            backup = None
+        attempted_forward_swap = True
+        staging.rename(dest)
+        # `backup` (None if there was no previous dest to move aside, e.g.
+        # the very first sync) now holds only the old, superseded static/
+        # content -- still tracked here so the caller can clean it up once
+        # `dest` is confirmed to hold the new content.
+        return _StaticSwapAttempt(succeeded=True, backup=backup, error=None)
+    except Exception as swap_exc:
+        # Only the forward swap (staging.rename(dest)) actually failing can
+        # mean a *different*, concurrent call's own forward swap landed
+        # valid new content at `dest` in the meantime -- that's the one
+        # case where stopping here without retrying is genuinely fine.
+        # Check dest's validity right now, before touching `backup` at all
+        # below: if we restored our own backup first and then checked,
+        # "dest is valid" would always be true (we just put it there
+        # ourselves) and would wrongly look identical to a concurrent
+        # success, masking the fact that OUR intended new content (still
+        # sitting untouched in `staging`) was never actually applied.
+        resolved_by_other = False
+        if attempted_forward_swap:
+            try:
+                resolved_by_other = dest.is_dir() and any(dest.iterdir())
+            except OSError:
+                # dest was renamed/removed by yet another concurrent call
+                # in between the is_dir() and iterdir() calls above --
+                # treat exactly like "not valid yet".
+                resolved_by_other = False
+        if resolved_by_other:
+            return _StaticSwapAttempt(succeeded=True, backup=backup, error=None)
+        if backup is not None and backup.exists() and not dest.exists():
+            # Not resolved by anyone else. Put the previous static/ back
+            # as a stopgap so the site is never left with none at all
+            # while the caller retries -- but this is NOT success: our own
+            # new content is still sitting in `staging`, untried or
+            # unapplied, so the caller must retry the forward swap rather
+            # than stopping here.
+            try:
+                backup.rename(dest)
+                backup = None
+            except Exception:
+                pass
+        return _StaticSwapAttempt(succeeded=False, backup=backup, error=swap_exc)
 
 
 def sync_shared_static(site_root: str | Path) -> Path:
@@ -391,7 +494,7 @@ def sync_shared_static(site_root: str | Path) -> Path:
     # depends on it being cleaned up, since every call below rebuilds
     # `dest` from scratch regardless.
     staging = Path(
-        tempfile.mkdtemp(dir=str(site_root), prefix=_STATIC_STAGING_PREFIX)
+        tempfile.mkdtemp(dir=str(site_root), prefix=STATIC_STAGING_PREFIX)
     )
     try:
         shutil.copytree(_STATIC_SRC, staging, dirs_exist_ok=True)
@@ -407,13 +510,9 @@ def sync_shared_static(site_root: str | Path) -> Path:
     # way that makes a single attempt fail with any of several OSError
     # variants (EEXIST, ENOTEMPTY, ENOENT depending on exactly where the
     # interleaving lands) without that alone telling us whether `dest`
-    # ended up valid. So after any failed attempt, check the one thing
-    # that actually matters -- is `dest` now a real, non-empty directory?
-    # -- and stop as soon as it is, since every sync copies the exact
-    # same package-versioned prep/static/ content, so whichever tree is
-    # at `dest` (ours or a concurrent caller's) is equivalent. Only if
-    # `dest` still isn't valid after every attempt is this treated as a
-    # genuine failure.
+    # ended up valid. Each attempt's own per-attempt concurrency reasoning
+    # lives in _attempt_static_swap; this loop is just the "try until
+    # succeeded or attempts exhausted" shell.
     #
     # Every backup dir created by ANY attempt (not just the last one) is
     # tracked in `pending_backups` and only disposed of once in a single
@@ -423,61 +522,15 @@ def sync_shared_static(site_root: str | Path) -> Path:
     pending_backups: list[Path] = []
     last_exc: Exception | None = None
     succeeded = False
-    for _attempt in range(_STATIC_SWAP_MAX_ATTEMPTS):
-        backup = site_root / f"{_STATIC_BACKUP_PREFIX}{uuid.uuid4().hex}"
-        attempted_forward_swap = False
-        try:
-            try:
-                dest.rename(backup)
-                pending_backups.append(backup)
-            except FileNotFoundError:
-                # No previous static/ to preserve: either this is the
-                # very first sync, or a concurrent call already moved it
-                # aside.
-                pass
-            attempted_forward_swap = True
-            staging.rename(dest)
+    for _attempt in range(STATIC_SWAP_MAX_ATTEMPTS):
+        outcome = _attempt_static_swap(staging, dest)
+        if outcome.backup is not None:
+            pending_backups.append(outcome.backup)
+        if outcome.succeeded:
             succeeded = True
             break
-        except Exception as swap_exc:
-            last_exc = swap_exc
-            # Only the forward swap (staging.rename(dest)) actually
-            # failing can mean a *different*, concurrent call's own
-            # forward swap landed valid new content at `dest` in the
-            # meantime -- that's the one case where stopping here
-            # without retrying is genuinely fine. Check dest's validity
-            # right now, before we touch `backup` at all below: if we
-            # restored our own backup first and then checked, "dest is
-            # valid" would always be true (we just put it there
-            # ourselves) and would wrongly look identical to a
-            # concurrent success, masking the fact that OUR intended
-            # new content (still sitting untouched in `staging`) was
-            # never actually applied.
-            resolved_by_other = False
-            if attempted_forward_swap:
-                try:
-                    resolved_by_other = dest.is_dir() and any(dest.iterdir())
-                except OSError:
-                    # dest was renamed/removed by yet another concurrent
-                    # call in between the is_dir() and iterdir() calls
-                    # above -- treat exactly like "not valid yet".
-                    resolved_by_other = False
-            if resolved_by_other:
-                succeeded = True
-                break
-            if backup.exists() and not dest.exists():
-                # Not resolved by anyone else. Put the previous static/
-                # back as a stopgap so the site is never left with none
-                # at all while we retry -- but this is NOT success: our
-                # own new content is still sitting in `staging`, untried
-                # or unapplied, so the loop must retry the forward swap
-                # rather than stopping here.
-                try:
-                    backup.rename(dest)
-                    pending_backups.remove(backup)
-                except Exception:
-                    pass
-            time.sleep(0.01)
+        last_exc = outcome.error
+        time.sleep(STATIC_SWAP_RETRY_DELAY_SECONDS)
 
     shutil.rmtree(staging, ignore_errors=True)
 
@@ -512,9 +565,9 @@ def sync_shared_static(site_root: str | Path) -> Path:
         if restored
         else f"{dest} is currently missing or empty"
     )
-    raise RuntimeError(
+    raise RenderError(
         f"prep publish: failed to refresh shared static assets at {dest} "
-        f"after {_STATIC_SWAP_MAX_ATTEMPTS} attempts ({last_exc!r}); "
+        f"after {STATIC_SWAP_MAX_ATTEMPTS} attempts ({last_exc!r}); "
         f"{detail}. Investigate the underlying filesystem error (disk "
         f"full? permissions?) before publishing again."
     ) from last_exc

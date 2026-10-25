@@ -41,10 +41,11 @@ from prep.manifest import (
     remove_user_from_manifests,
     validate_manifest,
 )
-from prep.metadata import VIDEO_EXTENSIONS, get_item_date
+from prep.metadata import get_item_date, is_video
 from prep.render import (
     COVERS_DIRNAME,
     AlbumSummary,
+    RenderError,
     load_album_summary,
     render_album_page,
     render_albums_index,
@@ -71,11 +72,14 @@ DEFAULT_PREP_CONFIG_PATH = Path("prep.toml")
 class PublishError(Exception):
     """Raised for `prep publish` orchestration failures (not manifest/asset-specific).
 
-    ManifestError (unknown user, missing file, item inside work/) and
-    AssetError (corrupt/unreadable source) are their own hard-failure types,
-    raised by task 4/6's modules respectively and handled the same way by
-    the CLI as this one — all three abort the run before any output is
-    written for the album being published.
+    ManifestError (unknown user, missing file, item inside work/),
+    AssetError (corrupt/unreadable source), and RenderError (every
+    sync_shared_static swap-retry attempt failed) are their own
+    hard-failure types, raised by prep/manifest.py, prep/assets.py, and
+    prep/render.py respectively, and handled the same way by the CLI as
+    this one — all four abort the run before any output is written for
+    the album being published (or, for RenderError, leave the site-wide
+    static/ in its previous, still-valid state).
     """
 
 
@@ -395,10 +399,6 @@ def _media_items(manifest) -> list[ManifestItem]:
     return [item for item in manifest.items if not item.is_note]
 
 
-def _is_video(filename: str) -> bool:
-    return Path(filename).suffix.lower() in VIDEO_EXTENSIONS
-
-
 BACKUP_DIR_PREFIX = ".thumbs-backup-"
 STAGING_DIR_PREFIX = ".thumbs-staging-"
 
@@ -493,7 +493,7 @@ def _generate_assets_atomically(
         for item in media_items:
             src = album_dir / item.file
             dest = staging / thumbnail_filename(item.file)
-            if _is_video(item.file):
+            if is_video(item.file):
                 generate_video_poster(src, dest)
             else:
                 generate_photo_thumbnail(src, dest)
@@ -527,7 +527,12 @@ def _generate_assets_atomically(
                 # remaining intact copy of this album's thumbnails --
                 # deliberately left on disk, NOT deleted, and a loud,
                 # specific error is raised instead of silently losing it.
-                raise RuntimeError(
+                # Raised as PublishError (not a bare RuntimeError) so
+                # `publish()`'s except clause gives the operator this
+                # carefully-written recovery text as a clean `Error: ...`
+                # message instead of a raw traceback (code smells review
+                # finding #1).
+                raise PublishError(
                     f"prep publish: failed to generate new thumbnails for "
                     f"{album_dir}, and the automatic restore of the "
                     f"previous thumbnails afterward ALSO failed "
@@ -634,8 +639,8 @@ def _publish_album(
     4. sync shared static assets and re-render the site-wide index across
        *all* published albums.
 
-    Raises ManifestError / AssetError / PublishError on any hard failure,
-    with nothing written for this album in that case.
+    Raises ManifestError / AssetError / PublishError / RenderError on any
+    hard failure, with nothing written for this album in that case.
     """
     album_dir = Path(album_dir).resolve()
     pictures_root = Path(pictures_root).resolve()
@@ -752,7 +757,7 @@ def publish(
         result = _publish_album(
             Path(album_dir), Path(pictures_root), Path(site_root), Path(users_path)
         )
-    except (ManifestError, AssetError, PublishError) as exc:
+    except (ManifestError, AssetError, PublishError, RenderError) as exc:
         raise click.ClickException(str(exc)) from exc
 
     click.echo(f"Published {result.album_path}")
