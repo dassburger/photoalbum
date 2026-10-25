@@ -1,0 +1,102 @@
+/* Shared styles for every page (albums index, album page, picture view):
+ * page chrome (the header + logout button), base typography/color, and
+ * link resets. Per-page layout (grid, tiles, nav buttons, ...) lives in
+ * that page's own CSS file, loaded in addition to this one.
+ *
+ * Per the plan's Development Approach / Solution Overview: no literal CSS
+ * property value is ever set via a `style="..."` attribute in a template
+ * or generated page — only `--custom-property: value;` declarations are
+ * allowed there, consumed by fixed rules such as the ones in this file.
+ * tests/test_render.py enforces this across every shipped template.
+ */
+
+:root {
+  --color-bg: #111214;
+  --color-surface: #1b1d21;
+  --color-text: #e8e8ea;
+  --color-text-muted: #9a9ca3;
+  --color-accent: #6fa8ff;
+  --color-border: #2c2f35;
+  --header-height: 3rem;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.4;
+}
+
+a {
+  color: var(--color-accent);
+  text-decoration: none;
+}
+
+a:hover,
+a:focus-visible {
+  text-decoration: underline;
+}
+
+img,
+video {
+  max-width: 100%;
+  display: block;
+}
+
+.site-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  height: var(--header-height);
+  padding: 0 1rem;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.site-header__title {
+  margin-right: auto;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.site-header__title a {
+  color: inherit;
+}
+
+/* The logout button appears on every page via base.html (even public
+ * ones, where it's effectively inert — see Task 15). Its click handling
+ * is wired up by static/logout.js in Task 15; this file only defines its
+ * appearance. */
+.logout-button {
+  appearance: none;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  border-radius: 0.25rem;
+  padding: 0.4rem 0.8rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.logout-button:hover,
+.logout-button:focus-visible {
+  color: var(--color-text);
+  border-color: var(--color-accent);
+}
+
+main {
+  min-height: calc(100vh - var(--header-height));
+}

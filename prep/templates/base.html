@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Photo Albums{% endblock %}</title>
+  <link rel="stylesheet" href="/static/base.css">
+  {% block extra_css %}{% endblock %}
+</head>
+<body>
+  <header class="site-header">
+    <span class="site-header__title"><a href="/">Photo Albums</a></span>
+    {# Click handling wired up by /static/logout.js in Task 15; this is
+       inert markup until then. Present on every page (including public
+       ones) per the plan's Solution Overview. #}
+    <button type="button" class="logout-button" id="logout-button">Log out</button>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  {% block extra_js %}{% endblock %}
+</body>
+</html>

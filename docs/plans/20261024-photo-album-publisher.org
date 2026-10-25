@@ -413,7 +413,7 @@ can't simulate.
 - [X] run tests — must pass before task 7
 - ⚠️ Same environment constraint as Task 3: this sandbox has no =ffmpeg=/=ffprobe= installed, so =test_generate_video_poster_against_real_ffmpeg= skips gracefully here (verified via =pytest -rs=) rather than exercising the real subprocess path. The ffmpeg-missing and subprocess-failure/unreadable-output error paths in =generate_video_poster= are instead exercised directly via mocking (=shutil.which=/=subprocess.run= monkeypatched), so that logic is covered without a real binary. Poster-frame generation against a *real* ffmpeg remains unverified in this sandbox and must be re-checked once Task 16's container (which installs ffmpeg) exists and runs the suite via =docker compose run --rm prep pytest=.
 
-*** TODO Task 7: Shared CSS/JS scaffolding and base templates
+*** DONE Task 7: Shared CSS/JS scaffolding and base templates
 
 *Files:*
 - Create: =prep/static/base.css=
@@ -424,12 +424,12 @@ can't simulate.
 - Create: =prep/render.py=
 - Create: =tests/test_render.py=
 
-- [ ] define the semantic class vocabulary in the per-component CSS files (e.g. =.album-grid=, =.album-tile=, =.day-separator=, =.note-slot=, =.picture-nav-button=, =.logout-button=) — no page may set a literal CSS property via a =style= attribute (only =--custom-property= declarations are ever allowed, per Solution Overview), enforced by convention in every later templating task
-- [ ] write =prep/templates/base.html= (shared =<head>=, CSS links, logout button markup) that other templates extend
-- [ ] implement =sync_shared_static(site_root)= in =prep/render.py= copying =prep/static/= into =site/static/= (same content every time — simple overwrite, not symlinked, since it's small and versioned with the code, not the photo archive)
-- [ ] write a test asserting every =style="..."= attribute that does appear in a shipped template or generated static HTML fixture contains *only* =--custom-property: value;= declarations (matching the narrowed rule in Solution Overview) — fail the test on any literal CSS property (e.g. =color=, =display=, =width=) inside a =style= attribute
-- [ ] write a test for =sync_shared_static= copying into a temp =site/= directory
-- [ ] run tests — must pass before task 8
+- [X] define the semantic class vocabulary in the per-component CSS files (e.g. =.album-grid=, =.album-tile=, =.day-separator=, =.note-slot=, =.picture-nav-button=, =.logout-button=) — no page may set a literal CSS property via a =style= attribute (only =--custom-property= declarations are ever allowed, per Solution Overview), enforced by convention in every later templating task
+- [X] write =prep/templates/base.html= (shared =<head>=, CSS links, logout button markup) that other templates extend
+- [X] implement =sync_shared_static(site_root)= in =prep/render.py= copying =prep/static/= into =site/static/= (same content every time — simple overwrite, not symlinked, since it's small and versioned with the code, not the photo archive)
+- [X] write a test asserting every =style="..."= attribute that does appear in a shipped template or generated static HTML fixture contains *only* =--custom-property: value;= declarations (matching the narrowed rule in Solution Overview) — fail the test on any literal CSS property (e.g. =color=, =display=, =width=) inside a =style= attribute
+- [X] write a test for =sync_shared_static= copying into a temp =site/= directory
+- [X] run tests — must pass before task 8
 
 *** TODO Task 8: Album page HTML generation
 

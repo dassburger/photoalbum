@@ -1,0 +1,42 @@
+/* Albums index page: year/month grouping and album tiles with scattered
+ * cover thumbnails. Task 10 wires prep/templates/albums_index.html up to
+ * this file and fills in the real layout (two tiles/row collapsing to
+ * one/row, per-tile cover scatter offsets fed through custom
+ * properties). Scaffolded here in Task 7 alongside the other
+ * per-component CSS files so the shared vocabulary/convention is
+ * established before any template references it.
+ */
+
+.albums-index {
+  padding: 1rem;
+}
+
+.albums-index__year {
+  font-size: 1.5rem;
+  margin: 1.5rem 0 0.5rem;
+}
+
+.albums-index__month {
+  font-size: 1.1rem;
+  color: var(--color-text-muted);
+  margin: 1rem 0 0.5rem;
+}
+
+.albums-index__grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1rem;
+}
+
+@media (max-width: 600px) {
+  .albums-index__grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.album-tile-link {
+  display: block;
+  border-radius: 0.25rem;
+  overflow: hidden;
+  background: var(--color-surface);
+}
