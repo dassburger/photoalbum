@@ -431,7 +431,7 @@ can't simulate.
 - [X] write a test for =sync_shared_static= copying into a temp =site/= directory
 - [X] run tests — must pass before task 8
 
-*** TODO Task 8: Album page HTML generation
+*** DONE Task 8: Album page HTML generation
 
 *Files:*
 - Modify: =prep/render.py=
@@ -439,12 +439,12 @@ can't simulate.
 - Modify: =prep/static/album-page.css=
 - Modify: =tests/test_render.py=
 
-- [ ] write =prep/templates/album_page.html=: grid container referencing =compute_grid_positions= output (grid-row/column placement emitted via the =--custom-property= =style= attributes defined in Task 7, feeding fixed rules in =album-page.css=) with day separators and note slots; thumbnails referenced via relative =.web/thumbs/...= paths and originals referenced by their plain filename, since both live alongside the generated page
-- [ ] implement =render_album_page(album_info, album_dir)= in =prep/render.py= wiring manifest + metadata + layout into the template, writing directly to =<album_dir>/index.html=
-- [ ] include left/right scroll button markup (hidden by default, shown on hover via CSS, enhanced by JS in task 14) and the horizontal =scroll-snap= container class in =album-page.css=
-- [ ] add the narrow-screen media query to =album-page.css= that collapses the whole grid to =grid-template-columns: 1fr= (single-column vertical stack, no horizontal scroll, notes rendered as normal readable paragraphs instead of fitted text)
-- [ ] write tests asserting the rendered album page contains one grid entry per manifest item in its authoritative order and a separator per day boundary
-- [ ] run tests — must pass before task 9
+- [X] write =prep/templates/album_page.html=: grid container referencing =compute_grid_positions= output (grid-row/column placement emitted via the =--custom-property= =style= attributes defined in Task 7, feeding fixed rules in =album-page.css=) with day separators and note slots; thumbnails referenced via relative =.web/thumbs/...= paths and originals referenced by their plain filename, since both live alongside the generated page
+- [X] implement =render_album_page(album_info, album_dir)= in =prep/render.py= wiring manifest + metadata + layout into the template, writing directly to =<album_dir>/index.html=
+- [X] include left/right scroll button markup (hidden by default, shown on hover via CSS, enhanced by JS in task 14) and the horizontal =scroll-snap= container class in =album-page.css=
+- [X] add the narrow-screen media query to =album-page.css= that collapses the whole grid to =grid-template-columns: 1fr= (single-column vertical stack, no horizontal scroll, notes rendered as normal readable paragraphs instead of fitted text)
+- [X] write tests asserting the rendered album page contains one grid entry per manifest item in its authoritative order and a separator per day boundary
+- [X] run tests — must pass before task 9
 
 *** TODO Task 9: Picture view HTML generation
 

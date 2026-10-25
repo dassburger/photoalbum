@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }} · Photo Albums{% endblock %}
+
+{% block extra_css %}
+  <link rel="stylesheet" href="/static/album-page.css">
+{% endblock %}
+
+{% block content %}
+<div class="album-page">
+  <h1 class="album-page__title">{{ title }}</h1>
+  <div class="album-grid-wrap">
+    <button type="button" class="scroll-button scroll-button--prev" aria-label="Scroll to earlier photos">&#8249;</button>
+    <div class="album-grid">
+      {% for row in rows %}
+        {% if row.kind == "separator" %}
+      <div class="day-separator">{{ row.day.strftime("%B %d, %Y") if row.day else "Undated" }}</div>
+        {% elif row.kind == "note" %}
+      <div class="note-slot" style="--row-span: {{ row.row_span }}; --col-span: {{ row.col_span }}">
+        <p class="note-slot__text">{{ row.note }}</p>
+      </div>
+        {% else %}
+      <a class="album-tile{% if row.kind == 'video' %} album-tile--video{% endif %}" href="{{ row.href }}" style="--row-span: {{ row.row_span }}; --col-span: {{ row.col_span }}">
+        <img src="{{ row.thumb_src }}" alt="{{ row.file }}" loading="lazy">
+      </a>
+        {% endif %}
+      {% endfor %}
+    </div>
+    <button type="button" class="scroll-button scroll-button--next" aria-label="Scroll to later photos">&#8250;</button>
+  </div>
+</div>
+{% endblock %}
