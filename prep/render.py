@@ -7,6 +7,9 @@ import json
 import mimetypes
 import random
 import shutil
+import tempfile
+import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -341,24 +344,163 @@ def render_picture_pages(album_info: AlbumInfo, album_dir: str | Path) -> list[P
     return written
 
 
+_STATIC_STAGING_PREFIX = ".static-staging-"
+_STATIC_BACKUP_PREFIX = ".static-backup-"
+_STATIC_SWAP_MAX_ATTEMPTS = 25
+
+
 def sync_shared_static(site_root: str | Path) -> Path:
-    """Copy prep/static/ into <site_root>/static/, overwriting it in place.
+    """Copy prep/static/ into <site_root>/static/, replacing it via a single
+    atomic directory rename rather than rmtree-then-copytree.
 
     Idempotent and cheap to repeat every `prep publish` run (per the plan's
-    processing flow): always a full overwrite of <site_root>/static/ with
+    processing flow): always a full replacement of <site_root>/static/ with
     the package's current contents, never a merge and never symlinked, so
     a file removed from prep/static/ is also removed from the synced copy
     on the next run rather than lingering.
 
+    `<site_root>/static/` is shared by every album's pages (unlike the
+    per-album `.web/thumbs/`), and `_publish_album` only holds a per-album
+    publish lock -- two different albums can legitimately call this
+    function at roughly the same time. The previous rmtree-then-copytree
+    implementation had a real window where `static/` didn't exist at all
+    (site-wide CSS/JS 404s, not just for the albums being published), and
+    two processes' rmtree/copytree calls could interleave and raise an
+    uncaught FileExistsError/FileNotFoundError. Building the new tree in a
+    staging directory and swapping it into place with os.rename (atomic on
+    the same filesystem, which a temp dir under site_root always is)
+    removes that window. A concurrent sync from another process winning
+    the swap first is treated as benign (both processes copy the exact
+    same package-versioned prep/static/ content, so whichever tree ends up
+    in place is equivalent) rather than as an error.
+
     Returns the destination directory.
     """
     site_root = Path(site_root)
+    site_root.mkdir(parents=True, exist_ok=True)
     dest = site_root / STATIC_DIRNAME
-    if dest.exists():
-        shutil.rmtree(dest)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(_STATIC_SRC, dest)
-    return dest
+
+    # Deliberately NOT opportunistically sweeping leftover
+    # `.static-staging-*`/`.static-backup-*` dirs here: under the exact
+    # concurrency this function must tolerate (two different albums'
+    # `prep publish` calling this at once), a sweep can't tell "orphaned
+    # leftover from a crashed run" apart from "another process's staging/
+    # backup dir that's actively in flight right now" and would delete
+    # the latter out from under it. A crashed run's leftover is at worst
+    # a small amount of disk space under site_root -- correctness never
+    # depends on it being cleaned up, since every call below rebuilds
+    # `dest` from scratch regardless.
+    staging = Path(
+        tempfile.mkdtemp(dir=str(site_root), prefix=_STATIC_STAGING_PREFIX)
+    )
+    try:
+        shutil.copytree(_STATIC_SRC, staging, dirs_exist_ok=True)
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+    # The actual swap (two renames: move the old dest aside, move staging
+    # into dest's place) is retried a bounded number of times rather than
+    # classified by errno alone: a concurrent sync_shared_static call (a
+    # different album's `prep publish` refreshing the same site-wide
+    # static/ at once) can interleave its own two renames with ours in a
+    # way that makes a single attempt fail with any of several OSError
+    # variants (EEXIST, ENOTEMPTY, ENOENT depending on exactly where the
+    # interleaving lands) without that alone telling us whether `dest`
+    # ended up valid. So after any failed attempt, check the one thing
+    # that actually matters -- is `dest` now a real, non-empty directory?
+    # -- and stop as soon as it is, since every sync copies the exact
+    # same package-versioned prep/static/ content, so whichever tree is
+    # at `dest` (ours or a concurrent caller's) is equivalent. Only if
+    # `dest` still isn't valid after every attempt is this treated as a
+    # genuine failure.
+    #
+    # Every backup dir created by ANY attempt (not just the last one) is
+    # tracked in `pending_backups` and only disposed of once in a single
+    # pass after the loop ends -- an earlier attempt's backup must not be
+    # forgotten just because a later attempt is the one that ultimately
+    # resolves `dest`, or it would leak on disk forever.
+    pending_backups: list[Path] = []
+    last_exc: Exception | None = None
+    succeeded = False
+    for _attempt in range(_STATIC_SWAP_MAX_ATTEMPTS):
+        backup = site_root / f"{_STATIC_BACKUP_PREFIX}{uuid.uuid4().hex}"
+        try:
+            try:
+                dest.rename(backup)
+                pending_backups.append(backup)
+            except FileNotFoundError:
+                # No previous static/ to preserve: either this is the
+                # very first sync, or a concurrent call already moved it
+                # aside.
+                pass
+            staging.rename(dest)
+            succeeded = True
+            break
+        except Exception as swap_exc:
+            last_exc = swap_exc
+            if backup.exists() and not dest.exists():
+                # Put the previous static/ back so the site is never left
+                # with none at all while this loop decides what to do.
+                try:
+                    backup.rename(dest)
+                    pending_backups.remove(backup)
+                except Exception:
+                    pass
+            try:
+                dest_now_valid = dest.is_dir() and any(dest.iterdir())
+            except OSError:
+                # dest was renamed/removed by yet another concurrent
+                # call in between the is_dir() and iterdir() calls above
+                # -- treat exactly like "not valid yet" and retry.
+                dest_now_valid = False
+            if dest_now_valid:
+                # dest is valid again, whether because the restore above
+                # succeeded or because a concurrent call's own forward
+                # swap won the race -- nothing more to do.
+                succeeded = True
+                break
+            time.sleep(0.01)
+
+    shutil.rmtree(staging, ignore_errors=True)
+
+    if succeeded:
+        # dest is confirmed valid -- every backup created along the way
+        # (ours or restored-and-superseded) now holds only redundant,
+        # equivalent content and is safe to discard.
+        for stale_backup in pending_backups:
+            shutil.rmtree(stale_backup, ignore_errors=True)
+        return dest
+
+    # Genuine failure: every attempt failed and dest never became valid
+    # again. Try to restore the most recently rescued backup so the site
+    # isn't left with no static/ at all, then raise a clear, specific
+    # error naming what happened.
+    restored = False
+    for rescued in reversed(pending_backups):
+        if rescued.exists() and not dest.exists():
+            try:
+                rescued.rename(dest)
+                restored = True
+                pending_backups.remove(rescued)
+                break
+            except Exception:
+                continue
+    for stale_backup in pending_backups:
+        shutil.rmtree(stale_backup, ignore_errors=True)
+
+    detail = (
+        "the previous static/ has been restored so the site isn't left "
+        "without one"
+        if restored
+        else f"{dest} is currently missing or empty"
+    )
+    raise RuntimeError(
+        f"prep publish: failed to refresh shared static assets at {dest} "
+        f"after {_STATIC_SWAP_MAX_ATTEMPTS} attempts ({last_exc!r}); "
+        f"{detail}. Investigate the underlying filesystem error (disk "
+        f"full? permissions?) before publishing again."
+    ) from last_exc
 
 
 def _month_groups(albums: list[tuple[AlbumSummary, date]]) -> list[dict]:

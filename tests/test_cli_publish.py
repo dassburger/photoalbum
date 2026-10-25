@@ -354,10 +354,7 @@ def test_generate_assets_atomically_preserves_backup_when_restore_also_fails(
 
     monkeypatch.setattr(Path, "rename", real_rename)
 
-    # A clear, specific error naming the recovery path, not a bare/
-    # swallowed OSError.
     message = str(excinfo.value)
-    assert "backup" in message.lower() or str(album_dir) in message
 
     # backup_dir must still exist on disk, holding the pre-run bytes
     # intact -- NOT silently deleted by `finally`.
@@ -368,8 +365,10 @@ def test_generate_assets_atomically_preserves_backup_when_restore_also_fails(
     assert (backup_dir / "IMG_0001.jpg.jpg").read_bytes() == old_item1_bytes
     assert (backup_dir / "IMG_0002.jpg.jpg").read_bytes() == old_item2_bytes
 
-    # The error message names this exact backup dir so an operator can
-    # recover manually.
+    # A clear, specific error naming this exact surviving backup dir's own
+    # path (not just "backup" in general, and not merely album_dir, which
+    # would also match plenty of unrelated/vaguer error messages) so an
+    # operator can recover manually.
     assert str(backup_dir) in message
 
 
@@ -476,6 +475,50 @@ def test_album_publish_lock_raises_clear_error_when_already_held(tmp_path):
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
+
+
+def test_publish_aborts_cleanly_when_album_lock_already_held(tmp_path, monkeypatch):
+    """Regression test (iteration-4 review finding) proving
+    `_album_publish_lock` is actually wired around the write-phases of
+    `_publish_album` itself, not just that the lock primitive works in
+    isolation (the existing
+    test_album_publish_lock_raises_clear_error_when_already_held only
+    exercises `_album_publish_lock` directly). Holding the album's lock
+    externally -- simulating a concurrent `prep publish` of the SAME
+    album already in flight -- must cause this publish attempt to raise
+    the "already being published" error (surfaced as a clean
+    ClickException, not a traceback) and leave nothing written for the
+    album, rather than silently proceeding into asset generation."""
+    import fcntl
+    import os
+
+    pictures_root = tmp_path / "pictures"
+    pictures_root.mkdir()
+    album_dir = _build_album(pictures_root)
+
+    site_root = tmp_path / "site"
+    users_path = tmp_path / "users.yml"
+
+    lock_path = album_dir / ".prep-publish.lock"
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        result = _invoke_publish(
+            monkeypatch, album_dir, pictures_root, site_root, users_path
+        )
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+    assert result.exit_code != 0
+    assert "already being published" in result.output
+
+    # Nothing written for this album: the lock must actually be held
+    # around Phase 2 onward (asset generation/rendering/album.json), not
+    # just acquired-and-released as a no-op somewhere unused.
+    assert not (album_dir / ".web").exists()
+    assert not (album_dir / "index.html").exists()
+    assert not (album_dir / "picture").exists()
 
 
 def test_publish_album_with_only_notes_falls_back_to_todays_date(tmp_path, monkeypatch):

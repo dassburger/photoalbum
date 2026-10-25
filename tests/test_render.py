@@ -142,6 +142,39 @@ def test_sync_shared_static_creates_site_root_if_missing(tmp_path: Path):
     assert (dest / "base.css").exists()
 
 
+def test_sync_shared_static_survives_concurrent_calls(tmp_path: Path):
+    """Regression test (iteration-4 review finding): `<site_root>/static/`
+    is shared by every album's pages, and `_publish_album` only holds a
+    per-album publish lock -- two different albums' `prep publish` runs
+    can legitimately call `sync_shared_static` on the same `site_root` at
+    roughly the same time. The old rmtree-then-copytree implementation
+    had a real window where `static/` didn't exist at all, and two
+    processes' rmtree/copytree calls could interleave and raise an
+    uncaught FileExistsError/FileNotFoundError. Hammer it with many
+    concurrent calls on the same site_root from multiple threads and
+    assert: no exception propagates, `static/` ends up fully populated,
+    and no `.static-staging-*`/`.static-backup-*` scratch directories are
+    left behind afterward."""
+    import concurrent.futures
+
+    site_root = tmp_path / "site"
+    site_root.mkdir()
+
+    def call(_: int) -> Path:
+        return sync_shared_static(site_root)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
+        results = list(executor.map(call, range(40)))
+
+    dest = site_root / STATIC_DIRNAME
+    assert all(r == dest for r in results)
+    assert dest.is_dir()
+    assert (dest / "base.css").exists()
+
+    leftover = [p.name for p in site_root.iterdir() if p.name != STATIC_DIRNAME]
+    assert leftover == []
+
+
 # -- render_album_page -----------------------------------------------------
 
 
