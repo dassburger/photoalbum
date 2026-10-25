@@ -11,15 +11,14 @@ generated files are still wanted.
 from __future__ import annotations
 
 import logging
-import os
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Iterable, Sequence
 
 from PIL import Image, ImageOps
 
+from prep.atomic import atomic_write
 from prep.manifest import ManifestItem
 
 logger = logging.getLogger(__name__)
@@ -54,8 +53,15 @@ def thumbnail_filename(source_filename: str) -> str:
     extension, as a prefix — so e.g. `IMG_0001.jpg` (a photo) and
     `IMG_0001.mp4` (an unrelated video that happens to share a stem) never
     collide on the same generated path.
+
+    Defensively takes only `Path(source_filename).name` (its basename) even
+    though prep/manifest.py's `validate_manifest` already hard-rejects any
+    `items` entry whose path escapes the album directory — belt-and-braces
+    so a path separator (e.g. a stray `../` or `work/`) in `source_filename`
+    can never translate into a generated-file path outside
+    `thumbs_dir()`/a staging directory (see Quality review finding #1).
     """
-    return f"{source_filename}.jpg"
+    return f"{Path(source_filename).name}.jpg"
 
 
 def thumbs_dir(album_dir: str | Path) -> Path:
@@ -68,27 +74,7 @@ def thumbnail_path(album_dir: str | Path, source_filename: str) -> Path:
     return thumbs_dir(album_dir) / thumbnail_filename(source_filename)
 
 
-def _atomic_write(dest: Path, write_fn) -> None:
-    """Call write_fn(tmp_path) to produce the file, then atomically rename it into dest.
-
-    tmp_path is a real (empty, pre-created) file in dest's own directory,
-    with the same suffix as dest, so tools that infer format from a file
-    extension (e.g. ffmpeg) behave the same as they would writing dest
-    directly. On any failure, the temp file is cleaned up and the
-    exception propagates — dest is never left partially written.
-    """
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        dir=dest.parent, prefix=f".{dest.name}.", suffix=dest.suffix or ".tmp"
-    )
-    os.close(fd)
-    tmp_path = Path(tmp_name)
-    try:
-        write_fn(tmp_path)
-        os.replace(tmp_path, dest)
-    except Exception:
-        tmp_path.unlink(missing_ok=True)
-        raise
+_atomic_write = atomic_write
 
 
 def generate_photo_thumbnail(
@@ -213,6 +199,8 @@ def pick_cover_thumbnails(
     """
     eligible = [item for item in items if not item.is_note]
     n = len(eligible)
+    if count <= 0:
+        return []
     if n <= count:
         return list(eligible)
     if count <= 1:

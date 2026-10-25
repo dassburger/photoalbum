@@ -187,6 +187,44 @@ album's images or HTML (e.g. after hand-editing `users.yml` or a
 docker compose run --rm prep sync-routes
 ```
 
+## The `publish.yaml` manifest: `items` and `note` entries
+
+Beyond `title`/`public`/`allowed_users`, `publish.yaml` can set an explicit
+`items` list to control exactly what's shown and in what order — mixing
+photo/video file references with standalone text notes:
+
+```yaml
+title: "Family Reunion 2024"
+public: false
+allowed_users: [alice, bob]
+items:
+  - file: IMG_0001.jpg
+  - file: IMG_0002.jpg
+  - note: "This was the day it rained all afternoon."
+  - file: VID_0003.mp4
+```
+
+**An explicit `items` list is authoritative and is never re-sorted
+chronologically** — the order you write is the order rendered, even if a
+later item's capture date is actually earlier than one listed before it.
+This is what lets you tell a story out of strict date order.
+
+If `items` is omitted entirely, `prep` auto-populates it by scanning the
+album folder (non-recursively, excluding `work/`) for files with a
+supported extension and sorting them by capture date. As of this writing,
+the supported extensions (`prep/metadata.py`'s `PHOTO_EXTENSIONS`/
+`VIDEO_EXTENSIONS` — check that file directly if this drifts) are:
+
+- Photos: `.jpg`, `.jpeg`
+- Video: `.mp4`, `.mov`, `.avi`, `.mkv`
+
+Any other file sitting loose in the album folder (a `.png`, a raw `.CR2`,
+a Darktable `.xmp`, etc.) is silently skipped during auto-population — it
+won't appear in the album, but see the caveat at the end of "The `work/`
+convention" below about it still being directly fetchable by URL. A `note`
+entry has no backing file at all; it renders as inline text and has no
+cover-thumbnail eligibility.
+
 ## The `work/` convention
 
 Each album folder may contain a fixed-name `work/` subdirectory for CR2
@@ -215,6 +253,25 @@ per-file symlink whitelist mirror, in exchange for a much simpler system
 practice: **put anything not ready to be seen by anyone inside `work/`**;
 don't rely on "I just didn't list it in `items`" as a privacy boundary for
 files living loose in the album folder itself.
+
+## Index privacy tradeoff: what a private album leaks on the public index
+
+The site-wide albums index has to show every album's title and a few cover
+thumbnails to work as a single, unauthenticated public landing page
+(including for anonymous visitors and as the logout redirect target) — but
+a private album's cover thumbnails live inside that album's auth-protected
+folder. To resolve this, `prep publish` copies each album's chosen cover
+thumbnails into a separate, always-public `site/.covers/<album-path>/`
+directory, served by Caddy with no `basic_auth` wrapper at all.
+
+**This means a private album's title and 2-3 small cover thumbnails are
+visible to anyone who can reach the index at all** — not the full album
+content, which stays behind that album's password, but enough to see that
+the album exists, its name, and a handful of its photos. This is a
+deliberate, modest metadata leak, consistent with this project's low-stakes
+"family-shared album" risk tolerance. If that tradeoff isn't acceptable for
+a particular album, don't publish it at all rather than relying on
+`allowed_users` to keep its existence or thumbnails fully hidden.
 
 ## Remote admin via Claude Code with Remote Control
 

@@ -17,12 +17,11 @@ Task 17).
 
 from __future__ import annotations
 
-import os
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Mapping, Sequence
 
+from prep.atomic import atomic_write_text
 from prep.manifest import AlbumInfo, WORK_DIRNAME
 
 # Caddyfile written into this directory (mounted at /etc/caddy in the caddy
@@ -102,7 +101,19 @@ def _album_block(album: AlbumInfo, users: Mapping[str, str], pictures_root: Path
     route_path = _album_route_path(rel_path)
     root_path = str(album.path.resolve())
 
-    lines = [f"    handle_path {_caddyfile_token(route_path + '/*')} {{"]
+    # Caddy's path matcher requires the literal trailing "/" before "*" in
+    # handle_path's "<route_path>/*" pattern below, so a bookmarked/typed
+    # URL without a trailing slash (e.g. "/2024/Trip") does NOT match it and
+    # falls through to the site-wide catch-all instead of the album --
+    # silently serving the wrong page with a 200, not an error. Emitting an
+    # explicit 308 redirect from the bare path to its trailing-slash form
+    # (verified against a real caddy:2.8.4-alpine container) is what makes
+    # a bookmarked album URL without a trailing slash actually work -- see
+    # Implementation Correctness review finding #1.
+    lines = [
+        f"    redir {_caddyfile_token(route_path)} {_caddyfile_token(route_path + '/')} 308"
+    ]
+    lines.append(f"    handle_path {_caddyfile_token(route_path + '/*')} {{")
     lines.append(f"        root * {_caddyfile_token(root_path)}")
     lines.append("        route {")
     lines.extend("        " + line for line in _basic_auth_block(album, users))
@@ -146,7 +157,17 @@ def generate_caddyfile(
 
     sorted_albums = sorted(albums, key=lambda a: _album_rel_path(a, pictures_root))
 
-    lines: list[str] = [f"{domain} {{", f"    tls {acme_email}", ""]
+    # domain/acme_email are trusted (operator-supplied, via prep.toml/CLI
+    # flags, never end-user input), but still routed through the same
+    # token-escaping every other dynamic value uses, rather than assuming
+    # they never contain whitespace/brace/quote characters that would
+    # otherwise break the Caddyfile's own tokenization (see Quality review
+    # finding #6).
+    lines: list[str] = [
+        f"{_caddyfile_token(domain)} {{",
+        f"    tls {_caddyfile_token(acme_email)}",
+        "",
+    ]
 
     lines.append("    handle /static/* {")
     lines.append(f"        root * {site_root_token}")
@@ -177,18 +198,7 @@ def write_caddyfile(path: str | Path, content: str) -> Path:
     directory `path` lives in (mounted at /etc/caddy in the caddy
     container — see CADDYFILE_FILENAME) never holds a half-written file."""
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
-    )
-    tmp_path = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(content)
-        tmp_path.replace(path)
-    except Exception:
-        tmp_path.unlink(missing_ok=True)
-        raise
+    atomic_write_text(path, content)
     return path
 
 

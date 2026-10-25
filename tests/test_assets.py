@@ -240,6 +240,11 @@ def test_pick_cover_thumbnails_all_notes_returns_empty():
     assert pick_cover_thumbnails(items, count=3) == []
 
 
+def test_pick_cover_thumbnails_count_zero_returns_empty():
+    items = _items("a.jpg", "b.jpg", "c.jpg")
+    assert pick_cover_thumbnails(items, count=0) == []
+
+
 # --- cleanup_stale_thumbnails ----------------------------------------------
 
 
@@ -278,3 +283,21 @@ def test_thumbnail_path_matches_thumbs_dir_and_filename_helpers(tmp_path):
     path = thumbnail_path(tmp_path, "IMG_0001.jpg")
     assert path == thumbs_dir(tmp_path) / thumbnail_filename("IMG_0001.jpg")
     assert path.name == "IMG_0001.jpg.jpg"
+
+
+def test_thumbnail_filename_sanitizes_path_traversal(tmp_path):
+    """Defensive hardening (Quality review finding #1): even though
+    prep/manifest.py's validate_manifest now hard-rejects any `items` entry
+    that escapes the album directory, thumbnail_filename/thumbnail_path
+    must never translate a path-separator-containing filename into a
+    generated path outside thumbs_dir() -- confirmed here by reproducing
+    the exact escape from the review ("../private-album/secret.jpg")."""
+    escaped = thumbnail_path(tmp_path / "album", "../private-album/secret.jpg")
+    assert escaped.parent == thumbs_dir(tmp_path / "album")
+    assert escaped.name == "secret.jpg.jpg"
+
+
+def test_thumbnail_filename_sanitizes_plain_subdirectory(tmp_path):
+    name = thumbnail_filename("subdir/photo.jpg")
+    assert name == "photo.jpg.jpg"
+    assert "/" not in name

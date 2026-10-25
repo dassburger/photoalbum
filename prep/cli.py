@@ -180,10 +180,17 @@ def _caddy_sync_options(f):
 def _published_albums(pictures_root: Path) -> list[AlbumInfo]:
     """Every discovered album that has been published at least once (has a
     .web/album.json) -- the same "known/published albums" set Task 10's
-    albums index and this task's Caddyfile both cover every route for."""
+    albums index and this task's Caddyfile both cover every route for.
+
+    populate_items=False: generate_caddyfile only ever reads each album's
+    path/public/allowed_users, never its items, so there's no reason to pay
+    for auto-population's per-item EXIF/ffprobe date scan on every `prep
+    sync-routes`/`users add`/`users passwd`/`users delete` run (see Quality
+    review finding #4).
+    """
     return [
         album
-        for album in discover_albums(pictures_root)
+        for album in discover_albums(pictures_root, populate_items=False)
         if load_album_summary(album.path) is not None
     ]
 
@@ -414,9 +421,24 @@ def _generate_assets_atomically(
 
         final_dir = thumbs_dir(album_dir)
         final_dir.mkdir(parents=True, exist_ok=True)
-        for item in media_items:
-            filename = thumbnail_filename(item.file)
-            (staging / filename).rename(final_dir / filename)
+        renamed: list[Path] = []
+        try:
+            for item in media_items:
+                filename = thumbnail_filename(item.file)
+                dest = final_dir / filename
+                (staging / filename).rename(dest)
+                renamed.append(dest)
+        except Exception:
+            # A failure partway through the move loop (e.g. a permission
+            # error or a full disk on one particular rename) must not leave
+            # *some* of this run's thumbnails moved into the real album
+            # folder while others aren't -- that would contradict this
+            # function's own "whole batch moved only if every item
+            # succeeded" contract (see Quality review finding #5). Undo
+            # every rename that already succeeded before re-raising.
+            for moved_dest in renamed:
+                moved_dest.unlink(missing_ok=True)
+            raise
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 

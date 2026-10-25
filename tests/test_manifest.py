@@ -154,6 +154,61 @@ def test_validate_manifest_item_inside_work_raises(tmp_path):
         validate_manifest(manifest, {})
 
 
+def test_validate_manifest_item_inside_case_variant_work_raises(tmp_path):
+    """Caddy's generated route excludes work/ case-insensitively (a `path`
+    matcher), so an explicit item under a case-variant directory like
+    `Work/` must be rejected here too -- otherwise it would validate/publish
+    successfully but then 404 at serve time (Implementation Correctness
+    review finding #2)."""
+    album_dir = tmp_path / "album"
+    album_dir.mkdir()
+    work_dir = album_dir / "Work"
+    work_dir.mkdir()
+    (work_dir / "secret.jpg").write_bytes(b"x")
+    (album_dir / "publish.yaml").write_text(
+        "items:\n  - file: Work/secret.jpg\n"
+    )
+    manifest = load_manifest(album_dir)
+    with pytest.raises(ManifestError, match="work"):
+        validate_manifest(manifest, {})
+
+
+def test_validate_manifest_path_traversal_outside_album_raises(tmp_path):
+    """A manifest item pointing outside the album directory entirely (e.g.
+    via a `../` path-traversal segment into a sibling album) must be a hard
+    validation failure -- previously this passed validate_manifest with no
+    error even though the referenced file lives in a different album
+    (Quality review finding #1)."""
+    root = tmp_path / "Pictures"
+    root.mkdir()
+    album_dir = root / "album-a"
+    album_dir.mkdir()
+    other_album_dir = root / "album-b"
+    other_album_dir.mkdir()
+    (other_album_dir / "secret.jpg").write_bytes(b"x")
+
+    (album_dir / "publish.yaml").write_text(
+        "items:\n  - file: ../album-b/secret.jpg\n"
+    )
+    manifest = load_manifest(album_dir)
+    with pytest.raises(ManifestError, match="escapes"):
+        validate_manifest(manifest, {})
+
+
+def test_validate_manifest_path_traversal_to_nonexistent_target_still_raises(tmp_path):
+    """Even when the traversal target doesn't exist, the escape must be
+    rejected with the "escapes" error, not the (less specific, and
+    misleading about *why* it's rejected) "does not exist" error."""
+    album_dir = tmp_path / "album"
+    album_dir.mkdir()
+    (album_dir / "publish.yaml").write_text(
+        "items:\n  - file: ../does-not-exist.jpg\n"
+    )
+    manifest = load_manifest(album_dir)
+    with pytest.raises(ManifestError, match="escapes"):
+        validate_manifest(manifest, {})
+
+
 def test_validate_manifest_notes_are_never_checked_as_files():
     album_dir = SAMPLE_ALBUM
     manifest = load_manifest(album_dir)
@@ -200,6 +255,70 @@ def test_discover_albums_empty_root_returns_empty_list(tmp_path):
     root = tmp_path / "Pictures"
     root.mkdir()
     assert discover_albums(root) == []
+
+
+def test_discover_albums_skips_case_variant_work_dir(tmp_path):
+    """Caddy's own work/ exclusion is case-insensitive, so a publish.yaml
+    accidentally sitting under a case-variant directory like `WORK/` must
+    be skipped here too, not just a lowercase `work/` (Implementation
+    Correctness review finding #2)."""
+    root = tmp_path / "Pictures"
+    root.mkdir()
+    bogus = root / "2024" / "Trip" / "WORK"
+    bogus.mkdir(parents=True)
+    (bogus / "publish.yaml").write_text("title: Bogus\n")
+
+    albums = discover_albums(root)
+
+    assert albums == []
+
+
+def test_discover_albums_populate_items_false_skips_auto_population(tmp_path, monkeypatch):
+    """populate_items=False must skip the per-item date-based auto-population
+    scan entirely (Quality review finding #4) -- verified here by making
+    get_item_date explode if it's ever called."""
+    import prep.manifest as manifest_module
+
+    def _boom(path):
+        raise AssertionError(f"get_item_date must not be called: {path}")
+
+    monkeypatch.setattr(manifest_module, "get_item_date", _boom)
+
+    root = tmp_path / "Pictures"
+    album_dir = root / "Album"
+    album_dir.mkdir(parents=True)
+    (album_dir / "a.jpg").write_bytes(b"x")
+    (album_dir / "publish.yaml").write_text("title: Album\n")
+
+    albums = discover_albums(root, populate_items=False)
+
+    assert len(albums) == 1
+    assert albums[0].manifest.title == "Album"
+    assert albums[0].manifest.items == []
+
+
+def test_discover_albums_populate_items_false_still_parses_explicit_items(tmp_path, monkeypatch):
+    """An explicit `items` list is cheap (no date lookups) and must still be
+    parsed even with populate_items=False -- only the auto-population scan
+    is skipped."""
+    import prep.manifest as manifest_module
+
+    def _boom(path):
+        raise AssertionError(f"get_item_date must not be called: {path}")
+
+    monkeypatch.setattr(manifest_module, "get_item_date", _boom)
+
+    root = tmp_path / "Pictures"
+    album_dir = root / "Album"
+    album_dir.mkdir(parents=True)
+    (album_dir / "a.jpg").write_bytes(b"x")
+    (album_dir / "publish.yaml").write_text(
+        "title: Album\nitems:\n  - file: a.jpg\n"
+    )
+
+    albums = discover_albums(root, populate_items=False)
+
+    assert [item.file for item in albums[0].manifest.items] == ["a.jpg"]
 
 
 # -- remove_user_from_manifests ---------------------------------------------
@@ -260,3 +379,36 @@ def test_remove_user_from_manifests_skips_work_dir(tmp_path):
     touched = remove_user_from_manifests("alice", root)
 
     assert touched == []
+
+
+def test_remove_user_from_manifests_skips_case_variant_work_dir(tmp_path):
+    root = tmp_path / "Pictures"
+    root.mkdir()
+    bogus = root / "Album" / "Work"
+    bogus.mkdir(parents=True)
+    (bogus / "publish.yaml").write_text("allowed_users: [alice]\n")
+
+    touched = remove_user_from_manifests("alice", root)
+
+    assert touched == []
+
+
+def test_remove_user_from_manifests_writes_atomically_no_leftover_temp_file(tmp_path):
+    """The publish.yaml rewrite must use the same temp-file-plus-rename
+    pattern as every other persisted-output writer (Quality review finding
+    #2), not a plain in-place `open("w")` -- verified here by checking no
+    temp file is left behind and the final file is a normal, directly
+    readable file (not a dangling rename target)."""
+    root = tmp_path / "Pictures"
+    root.mkdir()
+    album = root / "Album"
+    album.mkdir()
+    manifest_path = album / "publish.yaml"
+    manifest_path.write_text("allowed_users: [alice, bob]\n")
+
+    touched = remove_user_from_manifests("alice", root)
+
+    assert touched == [album]
+    leftovers = [p for p in album.iterdir() if p.name != "publish.yaml"]
+    assert leftovers == []
+    assert load_manifest(album).allowed_users == ["bob"]

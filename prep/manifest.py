@@ -8,6 +8,7 @@ from typing import Mapping
 
 from ruamel.yaml import YAML
 
+from prep.atomic import atomic_write
 from prep.metadata import PHOTO_EXTENSIONS, VIDEO_EXTENSIONS, get_item_date
 
 MANIFEST_FILENAME = "publish.yaml"
@@ -101,13 +102,23 @@ def _auto_populate_items(album_dir: Path) -> list[ManifestItem]:
     return [ManifestItem(file=path.name) for path, _ in dated]
 
 
-def load_manifest(album_dir: str | Path) -> Manifest:
+def load_manifest(album_dir: str | Path, *, populate_items: bool = True) -> Manifest:
     """Load and parse an album's publish.yaml.
 
     `title` defaults to the album folder's name when absent. `items`, when
     omitted from the manifest entirely, is auto-populated (see
     _auto_populate_items); when present, it's parsed and kept exactly in
     its written order.
+
+    `populate_items` defaults to True (full behavior, required for anything
+    that actually renders pages, e.g. `prep publish`). Pass False to skip
+    the auto-population scan (and the per-item EXIF/ffprobe date read it
+    requires) entirely when a manifest's items aren't needed at all --
+    e.g. Caddyfile-route generation and the albums index only ever need
+    `title`/`public`/`allowed_users`/`album_dir`, never `items` (see
+    Quality review finding #4). An *explicit* `items` list is still parsed
+    either way, since that's cheap (no date lookups) -- only the
+    auto-population scan is skipped.
 
     This does not validate the manifest (see validate_manifest) — a
     nonexistent file reference or unknown user is parsed successfully here
@@ -131,8 +142,10 @@ def load_manifest(album_dir: str | Path) -> Manifest:
     raw_items = data.get("items")
     if raw_items is not None:
         items = [_parse_item(raw) for raw in raw_items]
-    else:
+    elif populate_items:
         items = _auto_populate_items(album_dir)
+    else:
+        items = []
 
     return Manifest(
         album_dir=album_dir,
@@ -149,9 +162,20 @@ def validate_manifest(manifest: Manifest, users: Mapping[str, str]) -> None:
     Checks (all hard errors, per Development Approach's "fail loudly"
     rule):
     - every allowed_users entry is a known username in `users`
+    - no explicit items file entry resolves *outside* the album's own
+      directory (e.g. via a `../` path-traversal segment) -- such an entry
+      could otherwise read/publish another album's (possibly private)
+      content, since nothing else here or in prep/assets.py's
+      thumbnail/cover-copy path confirms the file actually belongs to this
+      album (see Quality review finding #1)
     - no explicit items file entry resolves inside the album's work/
       subdirectory (that content must never be published, regardless of
-      whether it happens to exist)
+      whether it happens to exist) -- checked case-insensitively against
+      every path component, matching Caddy's own case-insensitive `path`
+      matcher for the generated route's work/ exclusion (prep/caddyconfig.py),
+      so a case-variant directory like `Work/` is rejected here at publish
+      time with a clear error instead of silently 404ing at serve time
+      (see Implementation Correctness review finding #2)
     - every explicit items file entry exists on disk
     """
     unknown_users = [u for u in manifest.allowed_users if u not in users]
@@ -161,12 +185,20 @@ def validate_manifest(manifest: Manifest, users: Mapping[str, str]) -> None:
             f"{', '.join(unknown_users)}"
         )
 
-    work_dir = (manifest.album_dir / WORK_DIRNAME).resolve()
+    album_dir_resolved = manifest.album_dir.resolve()
     for item in manifest.items:
         if item.is_note:
             continue
         file_path = (manifest.album_dir / item.file).resolve()
-        if file_path == work_dir or work_dir in file_path.parents:
+
+        if file_path != album_dir_resolved and album_dir_resolved not in file_path.parents:
+            raise ManifestError(
+                f"{manifest.album_dir}: item file escapes the album "
+                f"directory and must not be published: {item.file}"
+            )
+
+        relative_parts = file_path.relative_to(album_dir_resolved).parts[:-1]
+        if any(part.lower() == WORK_DIRNAME for part in relative_parts):
             raise ManifestError(
                 f"{manifest.album_dir}: item file is inside {WORK_DIRNAME}/ "
                 f"and must not be published: {item.file}"
@@ -207,7 +239,7 @@ def remove_user_from_manifests(username: str, pictures_root: str | Path) -> list
     touched: list[Path] = []
     for manifest_path in sorted(pictures_root.rglob(MANIFEST_FILENAME)):
         relative_parts = manifest_path.relative_to(pictures_root).parts[:-1]
-        if WORK_DIRNAME in relative_parts:
+        if any(part.lower() == WORK_DIRNAME for part in relative_parts):
             continue
 
         with manifest_path.open("r") as f:
@@ -220,26 +252,47 @@ def remove_user_from_manifests(username: str, pictures_root: str | Path) -> list
             continue
 
         allowed_users.remove(username)
-        with manifest_path.open("w") as f:
-            _yaml.dump(data, f)
+
+        def _save(tmp_path: Path, data=data) -> None:
+            with tmp_path.open("w") as f:
+                _yaml.dump(data, f)
+
+        atomic_write(manifest_path, _save)
         touched.append(manifest_path.parent)
 
     return touched
 
 
-def discover_albums(pictures_root: str | Path) -> list[AlbumInfo]:
+def discover_albums(
+    pictures_root: str | Path, *, populate_items: bool = True
+) -> list[AlbumInfo]:
     """Walk pictures_root for every publish.yaml, returning path+manifest pairs.
 
-    Never descends into a work/ subdirectory — a publish.yaml accidentally
-    left under one is not a real album and is skipped. Results are sorted
-    by album path for deterministic ordering.
+    Never descends into a work/ subdirectory (checked case-insensitively,
+    matching Caddy's own case-insensitive `path` matcher -- see
+    validate_manifest's docstring and Implementation Correctness review
+    finding #2) — a publish.yaml accidentally left under one is not a real
+    album and is skipped. Results are sorted by album path for
+    deterministic ordering.
+
+    `populate_items` is forwarded to `load_manifest` for each discovered
+    album -- pass False when the caller only needs each album's
+    path/title/public/allowed_users (e.g. Caddyfile-route generation, the
+    albums index), to skip the potentially expensive per-item
+    EXIF/ffprobe-based auto-population date scan (see Quality review
+    finding #4).
     """
     pictures_root = Path(pictures_root)
     albums = []
     for manifest_path in sorted(pictures_root.rglob(MANIFEST_FILENAME)):
         relative_parts = manifest_path.relative_to(pictures_root).parts[:-1]
-        if WORK_DIRNAME in relative_parts:
+        if any(part.lower() == WORK_DIRNAME for part in relative_parts):
             continue
         album_dir = manifest_path.parent
-        albums.append(AlbumInfo(path=album_dir, manifest=load_manifest(album_dir)))
+        albums.append(
+            AlbumInfo(
+                path=album_dir,
+                manifest=load_manifest(album_dir, populate_items=populate_items),
+            )
+        )
     return albums

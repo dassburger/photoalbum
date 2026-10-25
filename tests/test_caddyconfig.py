@@ -135,6 +135,22 @@ def test_every_album_route_excludes_work_and_publish_yaml_before_file_server(tmp
         assert "/publish.yaml" in block
 
 
+def _handle_path_patterns(content: str) -> list[str]:
+    """Extract each `handle_path <pattern> {` directive's exact pattern
+    token from generated Caddyfile content, in order of appearance."""
+    patterns = []
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("handle_path "):
+            # "handle_path <pattern> {" -- pattern is always the second
+            # whitespace-separated token (never quoted in these tests,
+            # since none of these fixture album paths need escaping).
+            parts = stripped.split()
+            assert parts[-1] == "{", f"unexpected handle_path line: {line!r}"
+            patterns.append(parts[1])
+    return patterns
+
+
 def test_path_prefix_collision_pair_produces_non_overlapping_matchers(tmp_path):
     pictures_root = tmp_path / "pictures"
     site_root = tmp_path / "site"
@@ -145,12 +161,75 @@ def test_path_prefix_collision_pair_produces_non_overlapping_matchers(tmp_path):
         [trip, trip2], USERS, "photos.example.com", "me@example.com", pictures_root, site_root
     )
 
-    assert "/2024/Trip/*" in content
-    assert "/2024/Trip2/*" in content
-    # /2024/Trip/* must never appear as a prefix match consuming Trip2's
-    # route -- each matcher is its own exact-path-plus-/* token.
-    assert "/2024/Trip/*\n" in content or content.count("/2024/Trip/*") >= 1
-    assert "/2024/Trip2/*" != "/2024/Trip/*"
+    patterns = _handle_path_patterns(content)
+    assert patterns == ["/2024/Trip/*", "/2024/Trip2/*"]
+    # Each matcher is its own exact-path-plus-/* token -- /2024/Trip/* must
+    # never be a *prefix* of /2024/Trip2/*'s own token (which it textually
+    # is, as a substring, but the two parsed-out tokens must still be
+    # distinct, whole, non-overlapping patterns handed to Caddy).
+    assert patterns[0] != patterns[1]
+    assert not patterns[1].startswith(patterns[0].rstrip("*"))
+
+
+def test_album_route_redirects_bare_path_to_trailing_slash(tmp_path):
+    """Caddy's path matcher requires the literal trailing slash before `*`
+    in handle_path's pattern, so a bookmarked/typed album URL without a
+    trailing slash (e.g. /2024/Trip, no trailing /) would otherwise fall
+    through to the site-wide catch-all instead of the album -- verified
+    live against a real caddy:2.8.4-alpine container (Implementation
+    Correctness review finding #1). generate_caddyfile must emit an
+    explicit redirect to the trailing-slash form ahead of each album's
+    handle_path block."""
+    pictures_root = tmp_path / "pictures"
+    site_root = tmp_path / "site"
+    album = _album(pictures_root, "2024/Trip", public=True)
+
+    content = generate_caddyfile(
+        [album], USERS, "photos.example.com", "me@example.com", pictures_root, site_root
+    )
+
+    assert "redir /2024/Trip /2024/Trip/ 308" in content
+    # The redirect line must come before this album's handle_path block.
+    redir_idx = content.index("redir /2024/Trip ")
+    handle_idx = content.index("handle_path /2024/Trip/*")
+    assert redir_idx < handle_idx
+
+
+def test_album_route_redirect_escapes_space_in_album_path(tmp_path):
+    pictures_root = tmp_path / "pictures"
+    site_root = tmp_path / "site"
+    album = _album(pictures_root, "2024/Public Trip", public=True)
+
+    content = generate_caddyfile(
+        [album], USERS, "photos.example.com", "me@example.com", pictures_root, site_root
+    )
+
+    assert '"/2024/Public Trip" "/2024/Public Trip/" 308' in content
+
+
+def test_private_album_with_empty_allowed_users_locks_out_everyone(tmp_path):
+    """A private album (public=False) with an empty allowed_users list is
+    deliberately not equivalent to a public album -- it must still emit a
+    basic_auth block (with no accounts), so every request is rejected,
+    rather than silently falling through to unauthenticated access (Test
+    Coverage review finding #4)."""
+    pictures_root = tmp_path / "pictures"
+    site_root = tmp_path / "site"
+    album = _album(pictures_root, "2024/Nobody", public=False, allowed_users=[])
+
+    content = generate_caddyfile(
+        [album], USERS, "photos.example.com", "me@example.com", pictures_root, site_root
+    )
+
+    block_start = content.index("handle_path")
+    block = content[block_start:]
+    assert "basic_auth {" in block
+    # No username/hash lines at all inside this album's basic_auth block.
+    auth_start = block.index("basic_auth {")
+    auth_end = block.index("}", auth_start)
+    auth_body = block[auth_start:auth_end]
+    assert "alice" not in auth_body
+    assert "bob" not in auth_body
 
 
 def test_index_static_covers_remain_unauthenticated(tmp_path):

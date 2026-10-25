@@ -5,10 +5,8 @@ from __future__ import annotations
 import calendar
 import json
 import mimetypes
-import os
 import random
 import shutil
-import tempfile
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -18,6 +16,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from PIL import Image
 
 from prep.assets import THUMBS_DIRNAME, thumbnail_filename, thumbnail_path
+from prep.atomic import atomic_write_text
 from prep.layout import compute_grid_positions, group_by_day
 from prep.manifest import AlbumInfo, ManifestItem, discover_albums
 from prep.metadata import VIDEO_EXTENSIONS, get_item_date
@@ -187,20 +186,7 @@ def picture_page_filename(source_filename: str) -> str:
     return f"{Path(source_filename).stem}.html"
 
 
-def _atomic_write_text(dest: Path, content: str) -> None:
-    """Write `content` to `dest` via temp-file-plus-rename (crash-safe)."""
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        dir=dest.parent, prefix=f".{dest.name}.", suffix=".tmp"
-    )
-    tmp_path = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(content)
-        os.replace(tmp_path, dest)
-    except Exception:
-        tmp_path.unlink(missing_ok=True)
-        raise
+_atomic_write_text = atomic_write_text
 
 
 def _grid_rows_for_template(entries) -> list[dict]:
@@ -429,7 +415,12 @@ def render_albums_index(site_root: str | Path, pictures_root: str | Path) -> Pat
     pictures_root = Path(pictures_root)
 
     dated_summaries: list[tuple[AlbumSummary, date]] = []
-    for album_info in discover_albums(pictures_root):
+    # populate_items=False: this function only reads each album's own
+    # .web/album.json summary (title/public/earliest_date/covers) -- it
+    # never touches album_info.manifest.items, so there's no need to pay
+    # for auto-population's per-item EXIF/ffprobe date scan here (see
+    # Quality review finding #4).
+    for album_info in discover_albums(pictures_root, populate_items=False):
         summary = load_album_summary(album_info.path)
         if summary is None:
             continue

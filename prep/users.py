@@ -7,6 +7,8 @@ from pathlib import Path
 import bcrypt
 from ruamel.yaml import YAML
 
+from prep.atomic import atomic_write
+
 _yaml = YAML()
 _yaml.preserve_quotes = True
 
@@ -32,10 +34,20 @@ def load_users(path: str | Path):
 
 
 def save_users(path: str | Path, data) -> None:
-    """Save users.yml via ruamel.yaml round-trip mode, preserving formatting."""
+    """Save users.yml via ruamel.yaml round-trip mode, preserving formatting.
+
+    Written atomically (temp file + rename, see prep/atomic.py) so a crash
+    mid-write never leaves users.yml truncated/corrupt -- same crash-safety
+    rule the plan requires for anything touching persisted output (see
+    Quality review finding #2).
+    """
     path = Path(path)
-    with path.open("w") as f:
-        _yaml.dump(data, f)
+
+    def _save(tmp_path: Path) -> None:
+        with tmp_path.open("w") as f:
+            _yaml.dump(data, f)
+
+    atomic_write(path, _save)
 
 
 def hash_password(plaintext: str) -> str:
