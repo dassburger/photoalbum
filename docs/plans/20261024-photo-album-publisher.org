@@ -461,19 +461,20 @@ can't simulate.
 - [X] write a test for the cleanup behavior (stale picture page removed after its item leaves =items=)
 - [X] run tests — must pass before task 10
 
-*** TODO Task 10: Albums-index HTML generation
+*** DONE Task 10: Albums-index HTML generation
 
 *Files:*
 - Modify: =prep/render.py=
 - Create: =prep/templates/albums_index.html=
 - Modify: =tests/test_render.py=
 
-- [ ] write =prep/templates/albums_index.html=: years descending → months January-December → album tiles (two per row via CSS grid, collapsing to one per row under a narrow-screen media query defined in =albums-index.css=), each tile showing overlapping cover thumbnails (CSS transforms driven by per-tile deterministic offsets, computed in Python) and the album title. The index page itself, its CSS/JS, and the =.covers/= directory (next bullet) are the only things *not* behind any per-album =basic_auth= block in the generated Caddyfile (Task 12) — this is deliberate, since the index must be reachable by anonymous visitors and is the logout redirect target
-- [ ] implement =render_albums_index(site_root, pictures_root)= using each album's =<album_dir>/.web/album.json= summary (written by =prep publish= in Task 11 — *not* re-deriving dates/covers by re-scanning every album's metadata on every run, and only listing albums that have actually been published at least once, i.e. have an =album.json=, rather than every folder that merely has a =publish.yaml=), grouping by year/month derived from that summary's earliest item date, and writing =<site_root>/index.html=. Each tile's cover images are referenced from =<site_root>/.covers/<album-path>/= (the always-public copy — see Solution Overview's "Index privacy tradeoff"), never from the album's own auth-protected =.web/thumbs/=
-- [ ] write tests for year/month grouping and ordering (newest year first, January-December within a year) against a small multi-album fixture tree, including one album with a =publish.yaml= but no =album.json= (never published) correctly absent from the index
-- [ ] write a test for the deterministic cover-thumbnail scatter offsets (same album → same offsets across repeated runs)
-- [ ] write a test asserting a private album's index tile references =.covers/<album>/...= paths, never =<album>/.web/thumbs/...= paths
-- [ ] run tests — must pass before task 11
+- [X] write =prep/templates/albums_index.html=: years descending → months January-December → album tiles (two per row via CSS grid, collapsing to one per row under a narrow-screen media query defined in =albums-index.css=), each tile showing overlapping cover thumbnails (CSS transforms driven by per-tile deterministic offsets, computed in Python) and the album title. The index page itself, its CSS/JS, and the =.covers/= directory (next bullet) are the only things *not* behind any per-album =basic_auth= block in the generated Caddyfile (Task 12) — this is deliberate, since the index must be reachable by anonymous visitors and is the logout redirect target
+- [X] implement =render_albums_index(site_root, pictures_root)= using each album's =<album_dir>/.web/album.json= summary (written by =prep publish= in Task 11 — *not* re-deriving dates/covers by re-scanning every album's metadata on every run, and only listing albums that have actually been published at least once, i.e. have an =album.json=, rather than every folder that merely has a =publish.yaml=), grouping by year/month derived from that summary's earliest item date, and writing =<site_root>/index.html=. Each tile's cover images are referenced from =<site_root>/.covers/<album-path>/= (the always-public copy — see Solution Overview's "Index privacy tradeoff"), never from the album's own auth-protected =.web/thumbs/=
+- [X] write tests for year/month grouping and ordering (newest year first, January-December within a year) against a small multi-album fixture tree, including one album with a =publish.yaml= but no =album.json= (never published) correctly absent from the index
+- [X] write a test for the deterministic cover-thumbnail scatter offsets (same album → same offsets across repeated runs)
+- [X] write a test asserting a private album's index tile references =.covers/<album>/...= paths, never =<album>/.web/thumbs/...= paths
+- [X] run tests — must pass before task 11
+- ➕ =prep/render.py= now defines the =album.json= schema itself (Task 11 reads/writes this exact shape, not a new one Task 11 invents): a documented =AlbumSummary= dataclass (=album_path=, =title=, =public=, =earliest_date= as an ISO =YYYY-MM-DD= string, =covers= as a list of plain filenames under =site/.covers/<album_path>/=), plus =load_album_summary(album_dir) -> AlbumSummary | None= (=None= when never published) and =write_album_summary(album_dir, summary)= (atomic write, JSON). *Task 11 MUST call =write_album_summary= with exactly this schema* — see the "⚠️ SCHEMA CONTRACT" docstring on =AlbumSummary= in =prep/render.py=. This task's own tests hand-build fixture =album.json= files via =write_album_summary= directly, standing in for Task 11's real orchestration.
 
 *** TODO Task 11: =prep publish= orchestration command
 

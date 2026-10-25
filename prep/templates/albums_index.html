@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block title %}Photo Albums{% endblock %}
+
+{% block extra_css %}
+  <link rel="stylesheet" href="/static/albums-index.css">
+{% endblock %}
+
+{% block content %}
+<div class="albums-index">
+  {% for year_group in years %}
+  <h2 class="albums-index__year">{{ year_group.year }}</h2>
+  {% for month_group in year_group.months %}
+  <h3 class="albums-index__month">{{ month_group.label }}</h3>
+  <div class="albums-index__grid">
+    {% for album in month_group.albums %}
+    <a class="album-tile-link" href="{{ album.href }}">
+      <div class="album-tile-link__covers">
+        {% for cover in album.covers %}
+        <img class="cover-thumb" src="{{ cover.src }}" alt="" loading="lazy" style="--offset-x: {{ cover.offset_x }}px; --offset-y: {{ cover.offset_y }}px; --rotate: {{ cover.rotate }}deg">
+        {% endfor %}
+      </div>
+      <span class="album-tile-link__title">{{ album.title }}</span>
+    </a>
+    {% endfor %}
+  </div>
+  {% endfor %}
+  {% endfor %}
+</div>
+{% endblock %}

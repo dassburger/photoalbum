@@ -14,11 +14,16 @@ import pytest
 
 from prep.manifest import AlbumInfo, Manifest, ManifestItem
 from prep.render import (
+    COVERS_DIRNAME,
     STATIC_DIRNAME,
+    AlbumSummary,
+    load_album_summary,
     picture_page_filename,
     render_album_page,
+    render_albums_index,
     render_picture_pages,
     sync_shared_static,
+    write_album_summary,
 )
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "prep" / "templates"
@@ -385,3 +390,237 @@ def test_album_page_links_resolve_to_real_picture_pages(tmp_path: Path):
         href = f"picture/{picture_page_filename(item)}"
         assert f'href="{href}"' in album_html
         assert (album_info.path / href).exists()
+
+
+# -- AlbumSummary / load_album_summary / write_album_summary --------------
+
+
+def test_write_then_load_album_summary_round_trips(tmp_path: Path):
+    album_dir = tmp_path / "album"
+    album_dir.mkdir()
+    summary = AlbumSummary(
+        album_path="2024/Trip",
+        title="Trip",
+        public=True,
+        earliest_date="2024-01-01",
+        covers=["IMG_0001.jpg.jpg", "IMG_0002.jpg.jpg"],
+    )
+
+    dest = write_album_summary(album_dir, summary)
+    assert dest == album_dir / ".web" / "album.json"
+    assert dest.exists()
+
+    loaded = load_album_summary(album_dir)
+    assert loaded == summary
+
+
+def test_load_album_summary_returns_none_when_missing(tmp_path: Path):
+    album_dir = tmp_path / "never_published"
+    album_dir.mkdir()
+    assert load_album_summary(album_dir) is None
+
+
+def test_write_album_summary_is_atomic_write_then_rename(tmp_path: Path):
+    # The destination must never be observable in a half-written state;
+    # the simplest proxy for that (matching the other atomic-write tests
+    # in this suite) is that no stray temp file is left behind afterward.
+    album_dir = tmp_path / "album"
+    album_dir.mkdir()
+    write_album_summary(
+        album_dir,
+        AlbumSummary(
+            album_path="album", title="Album", public=False, earliest_date="2024-06-01"
+        ),
+    )
+    web_dir = album_dir / ".web"
+    assert [p.name for p in web_dir.iterdir()] == ["album.json"]
+
+
+# -- render_albums_index ----------------------------------------------------
+
+
+def _publish_fixture_album(
+    pictures_root: Path,
+    rel_path: str,
+    *,
+    title: str,
+    public: bool,
+    earliest_date: str,
+    covers: list[str] | None = None,
+    with_summary: bool = True,
+) -> Path:
+    """Create a minimal published-album fixture directly under pictures_root.
+
+    Writes a trivial publish.yaml (so prep.manifest.discover_albums finds
+    it) and, unless with_summary is False, an album.json summary via
+    write_album_summary — standing in for Task 11's real orchestration,
+    which doesn't exist yet (see this task's description).
+    """
+    album_dir = pictures_root / rel_path
+    album_dir.mkdir(parents=True)
+    (album_dir / "publish.yaml").write_text(f"public: {str(public).lower()}\n")
+
+    if with_summary:
+        write_album_summary(
+            album_dir,
+            AlbumSummary(
+                album_path=rel_path,
+                title=title,
+                public=public,
+                earliest_date=earliest_date,
+                covers=covers or [],
+            ),
+        )
+    return album_dir
+
+
+def test_render_albums_index_writes_index_html(tmp_path: Path):
+    pictures_root = tmp_path / "pictures"
+    site_root = tmp_path / "site"
+    _publish_fixture_album(
+        pictures_root,
+        "2024/Trip",
+        title="Trip",
+        public=True,
+        earliest_date="2024-03-15",
+    )
+
+    dest = render_albums_index(site_root, pictures_root)
+    assert dest == site_root / "index.html"
+    assert dest.exists()
+
+
+def test_render_albums_index_year_desc_month_jan_to_dec_grouping(tmp_path: Path):
+    pictures_root = tmp_path / "pictures"
+    site_root = tmp_path / "site"
+
+    _publish_fixture_album(
+        pictures_root,
+        "2023/Old",
+        title="Old Album",
+        public=True,
+        earliest_date="2023-07-01",
+    )
+    _publish_fixture_album(
+        pictures_root,
+        "2024/Spring",
+        title="Spring Album",
+        public=True,
+        earliest_date="2024-03-01",
+    )
+    _publish_fixture_album(
+        pictures_root,
+        "2024/Winter",
+        title="Winter Album",
+        public=True,
+        earliest_date="2024-01-01",
+    )
+
+    html = render_albums_index(site_root, pictures_root).read_text()
+
+    pos_2024 = html.index(">2024<")
+    pos_2023 = html.index(">2023<")
+    assert pos_2024 < pos_2023, "newest year must come first"
+
+    pos_january = html.index(">January<")
+    pos_march = html.index(">March<")
+    assert pos_january < pos_march, "January must come before March within a year"
+
+    pos_winter = html.index("Winter Album")
+    pos_spring = html.index("Spring Album")
+    assert pos_winter < pos_spring, "January's album must come before March's"
+
+
+def test_render_albums_index_omits_album_never_published(tmp_path: Path):
+    pictures_root = tmp_path / "pictures"
+    site_root = tmp_path / "site"
+
+    _publish_fixture_album(
+        pictures_root,
+        "2024/Published",
+        title="Published Album",
+        public=True,
+        earliest_date="2024-01-01",
+    )
+    _publish_fixture_album(
+        pictures_root,
+        "2024/NeverPublished",
+        title="Never Published Album",
+        public=True,
+        earliest_date="2024-01-01",
+        with_summary=False,
+    )
+
+    html = render_albums_index(site_root, pictures_root).read_text()
+    assert "Published Album" in html
+    assert "Never Published Album" not in html
+
+
+def test_render_albums_index_deterministic_cover_scatter_offsets(tmp_path: Path):
+    pictures_root = tmp_path / "pictures"
+    site_root = tmp_path / "site"
+    _publish_fixture_album(
+        pictures_root,
+        "2024/Trip",
+        title="Trip",
+        public=True,
+        earliest_date="2024-01-01",
+        covers=["IMG_0001.jpg.jpg", "IMG_0002.jpg.jpg"],
+    )
+
+    first = render_albums_index(site_root, pictures_root).read_text()
+    second = render_albums_index(site_root, pictures_root).read_text()
+
+    assert first == second
+
+    style_values = list(_iter_style_attributes(first))
+    assert len(style_values) == 2
+    for style_value in style_values:
+        assert "--offset-x:" in style_value
+        assert "--offset-y:" in style_value
+        assert "--rotate:" in style_value
+
+
+def test_render_albums_index_private_album_uses_public_covers_path(tmp_path: Path):
+    pictures_root = tmp_path / "pictures"
+    site_root = tmp_path / "site"
+    _publish_fixture_album(
+        pictures_root,
+        "2024/Private Family Album".replace(" ", "_"),
+        title="Private Family Album",
+        public=False,
+        earliest_date="2024-01-01",
+        covers=["IMG_0001.jpg.jpg"],
+    )
+
+    html = render_albums_index(site_root, pictures_root).read_text()
+
+    assert f"/{COVERS_DIRNAME}/2024/Private_Family_Album/IMG_0001.jpg.jpg" in html
+    assert ".web/thumbs" not in html
+
+
+def test_render_albums_index_only_custom_property_style_attributes(tmp_path: Path):
+    pictures_root = tmp_path / "pictures"
+    site_root = tmp_path / "site"
+    _publish_fixture_album(
+        pictures_root,
+        "2024/Trip",
+        title="Trip",
+        public=True,
+        earliest_date="2024-01-01",
+        covers=["IMG_0001.jpg.jpg", "IMG_0002.jpg.jpg", "IMG_0003.jpg.jpg"],
+    )
+
+    html = render_albums_index(site_root, pictures_root).read_text()
+    for style_value in _iter_style_attributes(html):
+        _assert_only_custom_properties(style_value, source="rendered albums index")
+
+
+def test_render_albums_index_empty_pictures_root_writes_empty_index(tmp_path: Path):
+    pictures_root = tmp_path / "pictures"
+    pictures_root.mkdir()
+    site_root = tmp_path / "site"
+
+    dest = render_albums_index(site_root, pictures_root)
+    assert dest.exists()
+    assert 'class="albums-index"' in dest.read_text()
